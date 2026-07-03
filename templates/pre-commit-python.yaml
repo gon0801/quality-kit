@@ -1,0 +1,11 @@
+# Fragmento Python -- se agrega solo si init-repo.ps1 detecta pyproject.toml,
+# requirements.txt, o archivos *.py en el repo. Usa ruff porque cubre lint Y
+# formato con una sola herramienta ya estandar en el ecosistema Python
+# (capability-first: no se suma un linter y un formateador separados si uno
+# solo ya cubre ambos).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format

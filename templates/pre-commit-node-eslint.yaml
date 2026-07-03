@@ -1,0 +1,13 @@
+# Fragmento Node/ESLint -- se agrega SOLO si el repo ya tiene su propia
+# config de ESLint (.eslintrc*, eslint.config.*, o una clave "eslintConfig"
+# en package.json). Nunca instalamos ni imponemos ESLint: "repo: local" con
+# "language: system" corre el binario que el repo YA tiene instalado via
+# npx, usando la config que el repo ya definio.
+  - repo: local
+    hooks:
+      - id: eslint-local
+        name: eslint (config existente del repo)
+        entry: npx --no-install eslint --fix
+        language: system
+        types_or: [javascript, jsx, ts, tsx]
+        pass_filenames: true

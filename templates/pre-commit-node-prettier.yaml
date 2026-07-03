@@ -1,0 +1,12 @@
+# Fragmento Node/Prettier -- se agrega SOLO si el repo ya tiene su propia
+# config de Prettier (.prettierrc*, prettier.config.*, o una clave
+# "prettier" en package.json). Mismo principio que ESLint: nunca se impone,
+# se usa la instalacion que el repo ya tiene.
+  - repo: local
+    hooks:
+      - id: prettier-local
+        name: prettier (config existente del repo)
+        entry: npx --no-install prettier --write
+        language: system
+        types_or: [javascript, jsx, ts, tsx, json, css, scss, markdown, yaml]
+        pass_filenames: true

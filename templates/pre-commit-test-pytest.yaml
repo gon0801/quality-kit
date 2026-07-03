@@ -1,0 +1,15 @@
+# Fragmento de pruebas Python -- se agrega SOLO si init-repo.ps1 detecta una
+# config de pytest (pytest.ini, [tool.pytest.ini_options] en pyproject.toml,
+# setup.cfg con seccion [tool:pytest]) o una carpeta tests/. Corre en
+# PRE-PUSH, no en pre-commit: las pruebas (y sobre todo un backtest o una
+# suite grande) son demasiado lentas para correr en cada commit.
+# <PYTHON_EXE> lo reemplaza init-repo.ps1 por el interprete de Python que
+# encontro y verifico en esta maquina.
+  - repo: local
+    hooks:
+      - id: pytest-pre-push
+        name: pytest (pre-push)
+        entry: <PYTHON_EXE> -m pytest -x -q
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
