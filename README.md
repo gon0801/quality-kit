@@ -1,6 +1,6 @@
 # quality-kit
 
-Cuatro capas de calidad que se suman a lo que ya tenes con SummonAI Kit
+Cinco capas de calidad que se suman a lo que ya tenes con SummonAI Kit
 (Claude Code, Kimi Code) y a cualquier otra IA que uses (Codex), para que
 todo lo que se construya en tus repos quede protegido de la misma forma sin
 importar que IA lo escribio:
@@ -19,6 +19,10 @@ importar que IA lo escribio:
 4. **Revision cruzada entre IAs** (`cross-review.ps1`): para un cambio
    delicado, le pedis a una IA DISTINTA de la que escribio el cambio que lo
    revise con ojos frescos, de forma independiente.
+5. **Auditoria de documentacion** (`docs-groom`, una skill para las 3 IAs):
+   limpia y reorganiza `CLAUDE.md`/`AGENTS.md`/`docs/` cuando se van
+   llenando de contenido viejo o repetido, sin tocar nunca los bloques que
+   ya administran otras herramientas (este kit incluido).
 
 Todo esto vive en esta carpeta aparte (`C:\Users\ehven\quality-kit\`), igual
 que `kimi-summonaikit`. No es parte de ningun repo tuyo -- se usa DESDE
@@ -199,6 +203,59 @@ Para sacar esta seccion despues, si alguna vez queres:
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\uninstall-ai-rules.ps1
+```
+
+## Auditoria de documentacion -- `docs-groom` (skill para las 3 IAs)
+
+Con el tiempo, `CLAUDE.md`/`AGENTS.md`/`docs/` de un repo se van llenando de
+contenido viejo, repetido, o de sesiones pasadas. `docs-groom` es una skill
+(no un script que corres vos) que le pedis a cualquiera de tus 3 IAs que
+audite y reorganice esa documentacion: `CLAUDE.md` queda como punto de
+entrada corto (resumen, estructura, reglas criticas, enlaces), `AGENTS.md`
+se enfoca en como trabajar en el repo, y el detalle se mueve a `docs/`.
+Termina siempre con un reporte de que se reorganizo, que se elimino, que se
+creo, y que necesita revision manual.
+
+Tiene 3 reglas de seguridad que no se negocian:
+
+1. **Nunca toca un bloque administrado** (marcado con `>>> ... START` /
+   `... END`, o un comentario "managed by" -- esto incluye las secciones que
+   el propio quality-kit y SummonAI Kit ya administran).
+2. **Historia con valor se muda, no se borra** -- va al tracker del repo
+   (`STATUS.md`) o queda en el historial de git; solo se elimina lo que de
+   verdad no aporta nada.
+3. **Verifica contra el codigo real antes de borrar algo por "obsoleto"** --
+   si no se puede confirmar, se deja y se marca para revision manual en vez
+   de borrarlo.
+
+Instalarla (correlo vos mismo, una IA no deberia tocar la configuracion de
+otra IA por su cuenta):
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-docs-groom.ps1
+```
+
+Esto agrega la skill a las 3 IAs: `~/.claude/skills/docs-groom/`,
+`~/.codex/skills/docs-groom/`, y `~/.kimi-code/skills/docs-groom/`. Reinicia
+(o abri una sesion nueva en) cada asistente despues para que la detecte, y
+pedile algo como "usa la skill docs-groom para limpiar la documentacion de
+este repo".
+
+El formato de Kimi se confirmo en vivo (no solo leyendo su documentacion):
+se armo una skill de prueba con este mismo contenido, se cargo con
+`kimi --skills-dir` apuntando a una carpeta descartable, y Kimi la listo
+correctamente bajo sus skills de usuario, con el nombre y la descripcion
+bien interpretados. El formato de Codex se tomo de una de sus propias
+skills de SummonAI Kit ya instaladas (mismo formato que Claude: front
+matter YAML con `name`/`description`/`allowed-tools`). Kimi no tiene
+`allowed-tools` en su front matter a proposito -- es un campo que Claude y
+Codex usan pero que, segun el propio codigo fuente de Kimi, no interpreta
+de la misma forma.
+
+Para sacarla despues:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\uninstall-docs-groom.ps1
 ```
 
 ## Troubleshooting

@@ -1,0 +1,11 @@
+---
+name: docs-groom
+description: >-
+  Audita, simplifica y reorganiza la documentacion de IA de este repo
+  (CLAUDE.md, AGENTS.md, docs/): saca contenido obsoleto, duplicado, de
+  sesiones pasadas o temporal, y deja CLAUDE.md como punto de entrada corto
+  con el detalle movido a docs/. Usar cuando el usuario pide "limpiar la
+  documentacion", "organizar los docs del repo", dice que "el CLAUDE.md ya
+  engordo demasiado", que "la documentacion esta desactualizada", o pide una
+  auditoria de AGENTS.md/CLAUDE.md/docs/.
+---

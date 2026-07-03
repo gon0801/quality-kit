@@ -3,6 +3,8 @@ $files = @(
     'C:\Users\ehven\quality-kit\cross-review.ps1',
     'C:\Users\ehven\quality-kit\install-ai-rules.ps1',
     'C:\Users\ehven\quality-kit\uninstall-ai-rules.ps1',
+    'C:\Users\ehven\quality-kit\install-docs-groom.ps1',
+    'C:\Users\ehven\quality-kit\uninstall-docs-groom.ps1',
     'C:\Users\ehven\quality-kit\tests\run-tests.ps1'
 )
 $hadError = $false

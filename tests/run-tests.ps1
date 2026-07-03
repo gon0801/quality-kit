@@ -15,6 +15,9 @@ $InitRepoScript = Join-Path $QualityKitDir 'init-repo.ps1'
 $CrossReviewScript = Join-Path $QualityKitDir 'cross-review.ps1'
 $InstallAiRulesScript = Join-Path $QualityKitDir 'install-ai-rules.ps1'
 $UninstallAiRulesScript = Join-Path $QualityKitDir 'uninstall-ai-rules.ps1'
+$InstallDocsGroomScript = Join-Path $QualityKitDir 'install-docs-groom.ps1'
+$UninstallDocsGroomScript = Join-Path $QualityKitDir 'uninstall-docs-groom.ps1'
+$DocsGroomDir = Join-Path $QualityKitDir 'docs-groom'
 $TestFixturesDir = Join-Path $QualityKitDir 'tests\temp-fixtures'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
@@ -432,6 +435,110 @@ $rBrokenUninstall = Invoke-ScriptCapture -ScriptPath $UninstallAiRulesScript -Sc
 Assert-True ($rBrokenUninstall.Stdout -match 'ADVERTENCIA.*UNA de las dos marcas') 'uninstall-ai-rules.ps1 warns explicitly about a half-present marker' "stdout=$($rBrokenUninstall.Stdout)"
 $brokenContentAfter = Read-TextFile -Path $brokenClaudeMd
 Assert-True ($brokenContentAfter -eq $brokenContent) 'the half-marked file is left byte-for-byte UNCHANGED (only a backup was taken, nothing auto-fixed)'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 5: docs-groom -- canonical instructions carry the 3 mandatory guardrails ==='
+$docsGroomInstructions = Read-TextFile -Path (Join-Path $DocsGroomDir 'INSTRUCTIONS.md')
+Assert-True ($null -ne $docsGroomInstructions) 'docs-groom\INSTRUCTIONS.md exists and is readable'
+Assert-True ($docsGroomInstructions -match 'NUNCA toques un bloque administrado') 'guardrail (a): never touch a marker-guarded block is stated explicitly'
+Assert-True ($docsGroomInstructions -match '>>> QUALITY-KIT CALIDAD SECTION START') 'guardrail (a) lists a concrete known marker pattern (quality-kit Calidad section)'
+Assert-True ($docsGroomInstructions -match '>>> SUMMONAIKIT KIT') 'guardrail (a) lists a concrete known marker pattern (SummonAI Kit sections)'
+Assert-True ($docsGroomInstructions -match 'managed by') 'guardrail (a) also covers the generic "managed by" comment convention, not only exact marker strings'
+Assert-True ($docsGroomInstructions -match 'MUDA, no se borra') 'guardrail (b): valuable history moves, it is not deleted, is stated explicitly'
+Assert-True ($docsGroomInstructions -match 'STATUS\.md') 'guardrail (b) names the tracker file (STATUS.md) as the destination for valuable history'
+Assert-True ($docsGroomInstructions -match 'Verifica antes de borrar') 'guardrail (c): verify against the real codebase before deleting as "obsolete" is stated explicitly'
+Assert-True ($docsGroomInstructions -match 'necesita revision manual') 'guardrail (c) requires flagging unverifiable claims in the final report instead of silently deleting them'
+Assert-True ($docsGroomInstructions -match 'maximo 200 lineas') 'the root CLAUDE.md <= 200 line policy is stated explicitly'
+Assert-True ($docsGroomInstructions -match 'CLAUDE.md.{0,40}anidado') 'the nested-CLAUDE.md-per-component policy is present'
+Assert-True ($docsGroomInstructions -match 'una skill, no texto pegado') 'the repeatable-procedure-becomes-a-skill policy is present'
+Assert-True ($docsGroomInstructions -match 'CON su') 'the permanent-rule-as-one-distilled-line-WITH-its-reason policy is present'
+$docsGroomBytes = [System.IO.File]::ReadAllBytes((Join-Path $DocsGroomDir 'INSTRUCTIONS.md'))
+$docsGroomNonAscii = @($docsGroomBytes | Where-Object { $_ -gt 127 })
+Assert-True ($docsGroomNonAscii.Count -eq 0) 'INSTRUCTIONS.md is byte-level pure ASCII (same discipline as every other file an AI CLI reads directly)' "non-ascii byte count=$($docsGroomNonAscii.Count)"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 5b: docs-groom frontmatter templates are present, per-AI-appropriate, and parse ==='
+function Test-SkillFrontmatterParses {
+    param([string]$Content)
+    $m = [regex]::Match($Content, '(?s)\A---\r?\n(.*?)\r?\n---\r?\n')
+    if (-not $m.Success) { return $null }
+    $block = $m.Groups[1].Value
+    $nameMatch = [regex]::Match($block, '(?m)^name:\s*(\S.*)$')
+    $descMatch = [regex]::Match($block, '(?m)^description:')
+    if (-not $nameMatch.Success -or -not $descMatch.Success) { return $null }
+    return [PSCustomObject]@{ Name = $nameMatch.Groups[1].Value.Trim(); Block = $block }
+}
+foreach ($fm in @(
+    @{ File = 'frontmatter-claude.yaml'; ExpectAllowedTools = $true },
+    @{ File = 'frontmatter-codex.yaml'; ExpectAllowedTools = $true },
+    @{ File = 'frontmatter-kimi.yaml'; ExpectAllowedTools = $false }
+)) {
+    $fmPath = Join-Path $DocsGroomDir $fm.File
+    $fmContent = Read-TextFile -Path $fmPath
+    Assert-True ($null -ne $fmContent) "$($fm.File) exists and is readable"
+    $parsed = Test-SkillFrontmatterParses -Content $fmContent
+    Assert-True ($null -ne $parsed) "$($fm.File) frontmatter parses (opens/closes with --- and has name: + description:)" "content=$fmContent"
+    if ($null -ne $parsed) {
+        Assert-True ($parsed.Name -eq 'docs-groom') "$($fm.File) frontmatter name is exactly 'docs-groom'" "name=$($parsed.Name)"
+        $hasAllowedTools = ($parsed.Block -match '(?m)^allowed-tools:')
+        Assert-True ($hasAllowedTools -eq $fm.ExpectAllowedTools) "$($fm.File) allowed-tools presence matches what this AI is expected to support (Kimi: no, confirmed live it does not act on this field; Claude/Codex: yes)" "hasAllowedTools=$hasAllowedTools expected=$($fm.ExpectAllowedTools)"
+    }
+    $fmBytes = [System.IO.File]::ReadAllBytes($fmPath)
+    $fmNonAscii = @($fmBytes | Where-Object { $_ -gt 127 })
+    Assert-True ($fmNonAscii.Count -eq 0) "$($fm.File) is byte-level pure ASCII"
+}
+
+Write-Host ''
+Write-Host '=== TEST GROUP 5c: install-docs-groom.ps1 against fake home directories, all three AI layouts ==='
+$fakeSkillHomesDir = Join-Path $TestFixturesDir 'fake-skill-homes'
+$fakeClaudeSkillsDir = Join-Path $fakeSkillHomesDir 'claude\skills'
+$fakeCodexSkillsDir = Join-Path $fakeSkillHomesDir 'codex\skills'
+$fakeKimiSkillsDir = Join-Path $fakeSkillHomesDir 'kimi\skills'
+New-Item -ItemType Directory -Path $fakeClaudeSkillsDir -Force | Out-Null
+New-Item -ItemType Directory -Path $fakeCodexSkillsDir -Force | Out-Null
+New-Item -ItemType Directory -Path $fakeKimiSkillsDir -Force | Out-Null
+
+function Invoke-InstallDocsGroom {
+    return Invoke-ScriptCapture -ScriptPath $InstallDocsGroomScript -ScriptArgs @('-ClaudeSkillsDir', $fakeClaudeSkillsDir, '-CodexSkillsDir', $fakeCodexSkillsDir, '-KimiSkillsDir', $fakeKimiSkillsDir)
+}
+function Invoke-UninstallDocsGroom {
+    return Invoke-ScriptCapture -ScriptPath $UninstallDocsGroomScript -ScriptArgs @('-ClaudeSkillsDir', $fakeClaudeSkillsDir, '-CodexSkillsDir', $fakeCodexSkillsDir, '-KimiSkillsDir', $fakeKimiSkillsDir)
+}
+
+$rInstallDocsGroom = Invoke-InstallDocsGroom
+Assert-True ($rInstallDocsGroom.ExitCode -eq 0) 'install-docs-groom.ps1 exits 0 against fake home directories' "exit=$($rInstallDocsGroom.ExitCode) stderr=$($rInstallDocsGroom.Stderr)"
+
+$claudeSkillMd = Read-TextFile -Path (Join-Path $fakeClaudeSkillsDir 'docs-groom\SKILL.md')
+$codexSkillMd = Read-TextFile -Path (Join-Path $fakeCodexSkillsDir 'docs-groom\SKILL.md')
+$kimiSkillMd = Read-TextFile -Path (Join-Path $fakeKimiSkillsDir 'docs-groom\SKILL.md')
+Assert-True ($null -ne $claudeSkillMd -and $claudeSkillMd -match 'name: docs-groom') 'Claude SKILL.md was created with the right skill name'
+Assert-True ($null -ne $codexSkillMd -and $codexSkillMd -match 'name: docs-groom') 'Codex SKILL.md was created with the right skill name'
+Assert-True ($null -ne $kimiSkillMd -and $kimiSkillMd -match 'name: docs-groom') 'Kimi SKILL.md was created with the right skill name'
+Assert-True ($claudeSkillMd -match 'allowed-tools:') 'Claude SKILL.md includes allowed-tools'
+Assert-True ($codexSkillMd -match 'allowed-tools:') 'Codex SKILL.md includes allowed-tools'
+Assert-True (-not ($kimiSkillMd -match 'allowed-tools:')) 'Kimi SKILL.md deliberately omits allowed-tools (confirmed live Kimi does not act on this field)'
+Assert-True ($claudeSkillMd -match 'NUNCA toques un bloque administrado') 'the installed Claude skill carries the marker-protection guardrail in its body'
+Assert-True ($kimiSkillMd -match 'MUDA, no se borra') 'the installed Kimi skill carries the mover-no-borrar guardrail in its body'
+Assert-True ($codexSkillMd -match 'Verifica antes de borrar') 'the installed Codex skill carries the verify-before-delete guardrail in its body'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 5d: install-docs-groom.ps1 is idempotent (re-run refreshes cleanly, with a backup) ==='
+$rInstallDocsGroom2 = Invoke-InstallDocsGroom
+Assert-True ($rInstallDocsGroom2.ExitCode -eq 0) 'second install-docs-groom.ps1 run also exits 0' "exit=$($rInstallDocsGroom2.ExitCode)"
+$claudeSkillMd2 = Read-TextFile -Path (Join-Path $fakeClaudeSkillsDir 'docs-groom\SKILL.md')
+Assert-True ($claudeSkillMd2 -eq $claudeSkillMd) 'a second install run regenerates byte-identical content for the same source (stable, not silently drifting)'
+$claudeSkillBackups = @(Get-ChildItem -LiteralPath (Join-Path $fakeClaudeSkillsDir 'docs-groom') -Filter 'SKILL.md.bak-*')
+Assert-True ($claudeSkillBackups.Count -gt 0) 'a timestamped backup of the previous SKILL.md was taken before the second install overwrote it'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 5e: uninstall-docs-groom.ps1 removes the skill cleanly and is a safe no-op afterward ==='
+$rUninstallDocsGroom = Invoke-UninstallDocsGroom
+Assert-True ($rUninstallDocsGroom.ExitCode -eq 0) 'uninstall-docs-groom.ps1 exits 0' "exit=$($rUninstallDocsGroom.ExitCode) stderr=$($rUninstallDocsGroom.Stderr)"
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $fakeClaudeSkillsDir 'docs-groom\SKILL.md'))) 'Claude SKILL.md is gone after uninstall'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $fakeKimiSkillsDir 'docs-groom\SKILL.md'))) 'Kimi SKILL.md is gone after uninstall'
+$rUninstallDocsGroomAgain = Invoke-UninstallDocsGroom
+Assert-True ($rUninstallDocsGroomAgain.ExitCode -eq 0) 'uninstall-docs-groom.ps1 exits 0 even when there is nothing left to remove' "exit=$($rUninstallDocsGroomAgain.ExitCode)"
+Assert-True ($rUninstallDocsGroomAgain.Stdout -match 'no existe -- nada que quitar') 'uninstall-docs-groom.ps1 reports plainly that there was nothing to remove on a repeat run'
 
 Write-Host ''
 Write-Host "=== SUMMARY: $script:PassCount passed, $script:FailCount failed ==="
