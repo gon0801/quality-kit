@@ -218,6 +218,62 @@ Assert-True ($existingConfigAfter -eq $handWrittenConfig) 'the pre-existing, non
 $existingClaudeMd = Read-TextFile -Path (Join-Path $existingRepo 'CLAUDE.md')
 Assert-True ($existingClaudeMd -match 'ya tenia su propia configuracion') 'CLAUDE.md correctly says the repo already had its own config, instead of falsely listing quality-kit hooks as active'
 
+Write-Host ''
+Write-Host '=== TEST GROUP 2d (real-world bug fix): Python detection is RECURSIVE -- nested *.py with no root marker still counts ==='
+# This mirrors the actual bug found piloting init-repo.ps1 on the trading
+# repo: all its real code lives under user_data\strategies\*.py, with no
+# pyproject.toml or requirements.txt anywhere near the root, and the
+# original root-only *.py check reported "generico" instead of "Python".
+$nestedPyRepo = New-FakeGitRepo -Name 'fake-nested-py-repo'
+New-Item -ItemType Directory -Path (Join-Path $nestedPyRepo 'src\deep') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $nestedPyRepo 'src\deep\thing.py') -Content "def thing():`n    return 42`n"
+Write-Utf8NoBomFile -Path (Join-Path $nestedPyRepo 'README.md') -Content "# nested python, no root marker`n"
+Push-Location -LiteralPath $nestedPyRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$r2d = Invoke-InitRepo -RepoPath $nestedPyRepo
+Assert-True ($r2d.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a repo whose only Python file is nested' "exit=$($r2d.ExitCode) stderr=$($r2d.Stderr)"
+$nestedPyConfig = Read-TextFile -Path (Join-Path $nestedPyRepo '.pre-commit-config.yaml')
+Assert-True ($nestedPyConfig -match 'ruff-check') 'a nested *.py file with NO root pyproject.toml/requirements.txt is still detected as Python (the actual reported bug)' "config=$nestedPyConfig"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2e (real-world bug fix): the recursive Python search still EXCLUDES .venv -- a repo with *.py only inside .venv is NOT Python ==='
+$venvOnlyRepo = New-FakeGitRepo -Name 'fake-venv-only-repo'
+New-Item -ItemType Directory -Path (Join-Path $venvOnlyRepo '.venv\Lib\site-packages') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $venvOnlyRepo '.venv\Lib\site-packages\somelib.py') -Content "# third-party library file, not this repo's own code`n"
+Write-Utf8NoBomFile -Path (Join-Path $venvOnlyRepo 'README.md') -Content "# a repo with only a venv, no real python code of its own`n"
+Push-Location -LiteralPath $venvOnlyRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$r2e = Invoke-InitRepo -RepoPath $venvOnlyRepo
+Assert-True ($r2e.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a repo with only a .venv' "exit=$($r2e.ExitCode)"
+$venvOnlyConfig = Read-TextFile -Path (Join-Path $venvOnlyRepo '.pre-commit-config.yaml')
+Assert-True (-not ($venvOnlyConfig -match 'ruff-check')) '*.py files found ONLY inside .venv do NOT count as this repo being Python (the search must skip .venv entirely)' "config=$venvOnlyConfig"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2f: re-running after the detected stack CHANGES regenerates the quality-kit-managed config ==='
+# First run: no Python markers anywhere yet -> generic.
+$evolvingRepo = New-FakeGitRepo -Name 'fake-evolving-repo'
+Write-Utf8NoBomFile -Path (Join-Path $evolvingRepo 'README.md') -Content "# starts generic, becomes python`n"
+Push-Location -LiteralPath $evolvingRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rEvolve1 = Invoke-InitRepo -RepoPath $evolvingRepo
+Assert-True ($rEvolve1.ExitCode -eq 0) 'first run (generic) exits 0' "exit=$($rEvolve1.ExitCode)"
+$evolvingConfig1 = Read-TextFile -Path (Join-Path $evolvingRepo '.pre-commit-config.yaml')
+Assert-True (-not ($evolvingConfig1 -match 'ruff-check')) 'sanity: first run correctly detected generic (no Python yet)'
+
+# Now add a nested Python file (no root marker) and re-run: the config
+# already carries the quality-kit marker, so it must be REGENERATED to
+# reflect the new stack, not left stale.
+New-Item -ItemType Directory -Path (Join-Path $evolvingRepo 'strategies') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $evolvingRepo 'strategies\my_strategy.py') -Content "def run():`n    pass`n"
+Push-Location -LiteralPath $evolvingRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'add python code') } finally { Pop-Location }
+$rEvolve2 = Invoke-InitRepo -RepoPath $evolvingRepo
+Assert-True ($rEvolve2.ExitCode -eq 0) 'second run (now python) exits 0' "exit=$($rEvolve2.ExitCode)"
+$evolvingConfig2 = Read-TextFile -Path (Join-Path $evolvingRepo '.pre-commit-config.yaml')
+Assert-True ($evolvingConfig2 -match 'ruff-check') 'the quality-kit-managed config was REGENERATED to include Python hooks once the stack actually changed' "config=$evolvingConfig2"
+$evolvingMarkerCount = ([regex]::Matches($evolvingConfig2, [regex]::Escape('QUALITY-KIT MANAGED'))).Count
+Assert-True ($evolvingMarkerCount -eq 1) 'the regenerated config still carries exactly one quality-kit marker (clean regeneration, not an appended duplicate)'
+
 # ------------------------------------------------------------------
 # TEST GROUP 3: cross-review.ps1 -DryRun (never calls a real AI in this suite)
 # ------------------------------------------------------------------

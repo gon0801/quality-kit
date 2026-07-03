@@ -33,6 +33,16 @@ $WorkflowMarker = 'Generado por quality-kit'
 $CalidadStartMarker = '<!-- >>> QUALITY-KIT CALIDAD SECTION START -- managed by quality-kit''s init-repo.ps1. Do not hand-edit between these markers; re-running init-repo.ps1 will refresh this block cleanly. -->'
 $CalidadEndMarker = '<!-- >>> QUALITY-KIT CALIDAD SECTION END -->'
 
+# Directories a recursive Python-file search must never descend into: they
+# either aren't the repo's own code (dependencies, virtualenvs) or aren't
+# code at all (vcs internals, bytecode cache). Real-world bug found piloting
+# this script on an actual repo: the trading repo's strategy code lives
+# entirely under user_data\strategies\*.py, with no pyproject.toml or
+# requirements.txt at the root, and the original root-only *.py check
+# missed it completely, misreporting the stack as "generic".
+$PySearchExcludedDirNames = @('.git', '.venv', 'venv', 'node_modules', '__pycache__')
+$PySearchMaxDepth = 4
+
 function Write-Utf8NoBomFile {
     param([string]$Path, [string]$Content)
     [System.IO.File]::WriteAllText($Path, $Content, $Utf8NoBom)
@@ -137,17 +147,34 @@ function Invoke-PreCommit {
 # Stack / tooling detection
 # ------------------------------------------------------------------
 
+function Test-HasNestedPyFile {
+    param([string]$DirPath, [int]$DepthRemaining)
+    # Fast path: files directly in this directory, checked before
+    # recursing further, so a real hit at a shallow depth returns
+    # immediately without needlessly walking siblings.
+    $filesHere = @(Get-ChildItem -LiteralPath $DirPath -Filter '*.py' -File -ErrorAction SilentlyContinue)
+    if ($filesHere.Count -gt 0) { return $true }
+    if ($DepthRemaining -le 0) { return $false }
+    $subDirs = @(Get-ChildItem -LiteralPath $DirPath -Directory -ErrorAction SilentlyContinue | Where-Object { $PySearchExcludedDirNames -notcontains $_.Name })
+    foreach ($sub in $subDirs) {
+        if (Test-HasNestedPyFile -DirPath $sub.FullName -DepthRemaining ($DepthRemaining - 1)) { return $true }
+    }
+    return $false
+}
+
 function Test-HasPythonStack {
     param([string]$RepoPath)
     if (Test-Path -LiteralPath (Join-Path $RepoPath 'pyproject.toml')) { return $true }
     if (Test-Path -LiteralPath (Join-Path $RepoPath 'requirements.txt')) { return $true }
-    # Deliberately NOT recursive: a deep scan would wander into .venv/
-    # site-packages or node_modules and misfire on unrelated *.py files
-    # bundled inside other tools' installs. A top-level check is enough to
-    # catch "a repo of loose Python scripts with no project manifest yet";
-    # anything more structured already has pyproject.toml/requirements.txt.
-    $pyFiles = @(Get-ChildItem -LiteralPath $RepoPath -Filter '*.py' -File -ErrorAction SilentlyContinue)
-    return ($pyFiles.Count -gt 0)
+    # Recursive on purpose (real-world bug fix): plenty of real Python repos
+    # -- the trading repo that surfaced this is a live example -- keep all
+    # their actual code a few directories deep (e.g. user_data\strategies\
+    # *.py) with no manifest file at the root at all. Capped at
+    # $PySearchMaxDepth and skipping $PySearchExcludedDirNames (so it never
+    # wanders into .venv/node_modules/__pycache__ and misfires on someone
+    # else's bundled *.py files, and never turns into an unbounded walk on
+    # a huge repo) and stops at the very first match for speed.
+    return (Test-HasNestedPyFile -DirPath $RepoPath -DepthRemaining $PySearchMaxDepth)
 }
 
 function Test-HasNodeStack {
