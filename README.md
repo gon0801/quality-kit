@@ -353,3 +353,18 @@ generado el mismo -- si ya tenias uno propio, lo deja intacto y te avisa
 por consola. La seccion "Calidad" que agrega a `CLAUDE.md`/`AGENTS.md` en
 ese caso tambien lo aclara, en vez de listar candados que en realidad no
 estan activos.
+
+### Le agregaste algo a mano dentro de `.pre-commit-config.yaml`
+
+Tambien es seguro: `init-repo.ps1` compara lo que generaria hoy contra el
+archivo existente antes de reescribirlo. Si encuentra cualquier diferencia
+(un `exclude:` que agregaste, un comentario explicandolo, un hook nuevo,
+args editados), NO reescribe nada -- deja el archivo tal cual esta y avisa
+por consola "Config personalizado detectado", listando las lineas que no
+reconoce. No fusiona nada solo; si el kit necesita actualizar sus propios
+fragmentos ahi, la fusion es a mano. (Ojo: esto tambien significa que si
+el stack de tu repo cambia -- por ejemplo, agregas el primer archivo
+Python -- y el archivo ya tenia algun agregado propio o ya no coincide
+byte a byte con lo que el kit generaria hoy, tampoco se actualiza solo;
+borralo y volve a correr `init-repo.ps1` si queres que se regenere desde
+cero con los candados del nuevo stack.)

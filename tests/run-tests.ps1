@@ -294,7 +294,7 @@ $venvOnlyConfig = Read-TextFile -Path (Join-Path $venvOnlyRepo '.pre-commit-conf
 Assert-True (-not ($venvOnlyConfig -match 'ruff-check')) '*.py files found ONLY inside .venv do NOT count as this repo being Python (the search must skip .venv entirely)' "config=$venvOnlyConfig"
 
 Write-Host ''
-Write-Host '=== TEST GROUP 2f: re-running after the detected stack CHANGES regenerates the quality-kit-managed config ==='
+Write-Host '=== TEST GROUP 2f (superseded by lesson 4 -- see below): re-running after the detected stack CHANGES now PRESERVES the existing file, it does not silently regenerate ==='
 # First run: no Python markers anywhere yet -> generic.
 $evolvingRepo = New-FakeGitRepo -Name 'fake-evolving-repo'
 Write-Utf8NoBomFile -Path (Join-Path $evolvingRepo 'README.md') -Content "# starts generic, becomes python`n"
@@ -305,9 +305,14 @@ Assert-True ($rEvolve1.ExitCode -eq 0) 'first run (generic) exits 0' "exit=$($rE
 $evolvingConfig1 = Read-TextFile -Path (Join-Path $evolvingRepo '.pre-commit-config.yaml')
 Assert-True (-not ($evolvingConfig1 -match 'ruff-check')) 'sanity: first run correctly detected generic (no Python yet)'
 
-# Now add a nested Python file (no root marker) and re-run: the config
-# already carries the quality-kit marker, so it must be REGENERATED to
-# reflect the new stack, not left stale.
+# Now add a nested Python file (no root marker) and re-run. Lesson 4
+# CHANGED this on purpose: the kit can no longer tell "the stack evolved"
+# apart from "someone customized this file by hand" (both look the same:
+# the existing file differs from what would be generated today), and two
+# real incidents proved silent full-file regeneration is dangerous. So the
+# safer, intentional behavior now is to leave the existing file untouched
+# and say so -- NOT to silently upgrade it. If you want the new stack's
+# hooks, delete the file (or merge by hand) and re-run.
 New-Item -ItemType Directory -Path (Join-Path $evolvingRepo 'strategies') -Force | Out-Null
 Write-Utf8NoBomFile -Path (Join-Path $evolvingRepo 'strategies\my_strategy.py') -Content "def run():`n    pass`n"
 Push-Location -LiteralPath $evolvingRepo
@@ -315,9 +320,8 @@ try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('com
 $rEvolve2 = Invoke-InitRepo -RepoPath $evolvingRepo
 Assert-True ($rEvolve2.ExitCode -eq 0) 'second run (now python) exits 0' "exit=$($rEvolve2.ExitCode)"
 $evolvingConfig2 = Read-TextFile -Path (Join-Path $evolvingRepo '.pre-commit-config.yaml')
-Assert-True ($evolvingConfig2 -match 'ruff-check') 'the quality-kit-managed config was REGENERATED to include Python hooks once the stack actually changed' "config=$evolvingConfig2"
-$evolvingMarkerCount = ([regex]::Matches($evolvingConfig2, [regex]::Escape('QUALITY-KIT MANAGED'))).Count
-Assert-True ($evolvingMarkerCount -eq 1) 'the regenerated config still carries exactly one quality-kit marker (clean regeneration, not an appended duplicate)'
+Assert-True ($evolvingConfig2 -eq $evolvingConfig1) 'lesson 4: the existing config is left BYTE-IDENTICAL even though the stack changed -- the kit cannot tell that apart from a hand customization, so it never silently upgrades' "before=$evolvingConfig1 after=$evolvingConfig2"
+Assert-True ($rEvolve2.Stdout -match 'Config personalizado detectado') 'init-repo.ps1 reports the safety net triggered (treats "stack changed" the same as "possibly customized", on purpose)' "stdout=$($rEvolve2.Stdout)"
 
 Write-Host ''
 Write-Host '=== TEST GROUP 2g (MCP-2 lesson, item 1a): an explicit pytest config wins even when unittest signal is ALSO present ==='
@@ -505,6 +509,80 @@ $spawnFailConfigAfter = Read-TextFile -Path (Join-Path $spawnFailRepo '.pre-comm
 Assert-True ($spawnFailConfigAfter -eq $spawnFailConfigDoctored) 'the doctored entry (pointing at an unreachable exe) is kept byte-for-byte -- a validator spawn failure must NEVER be treated as proof the hook is broken' "before=$spawnFailConfigDoctored after=$spawnFailConfigAfter"
 Assert-True ($rSpawnFail.Stdout -match 'No se pudo verificar') 'the message explicitly says the hook could NOT be verified (validator error), distinct from "ya NO funciona" (the command itself failing)' "stdout=$($rSpawnFail.Stdout)"
 Assert-True ($rSpawnFail.Stdout -notmatch 'ya NO funciona') 'this must NOT be reported as the command itself failing -- it is a validator/infrastructure problem'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2p (lesson 4, item 4a, THE REAL INCIDENT SHAPE): a kit-generated config with a hand-added exclude + comment is preserved byte-identical, and the warning lists it ==='
+# Real incident: another AI session added a documented "exclude:" line
+# (with its own explanatory comment) directly in a kit-managed config for
+# a legitimate reason (pre-existing whitespace errors would otherwise
+# block commits until a dedicated cleanup). Built realistically: a real
+# run first, THEN the customization is added on top of the generator's
+# own real output, exactly like a person editing the file after the fact.
+$customizedRepo = New-FakeGitRepo -Name 'fake-customized-repo'
+Write-Utf8NoBomFile -Path (Join-Path $customizedRepo 'app.py') -Content "def add(a, b):`n    return a + b`n"
+Push-Location -LiteralPath $customizedRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rCustomizedSetup = Invoke-InitRepo -RepoPath $customizedRepo
+Assert-True ($rCustomizedSetup.ExitCode -eq 0) 'sanity: the setup run exits 0' "exit=$($rCustomizedSetup.ExitCode)"
+$customizedConfigReal = Read-TextFile -Path (Join-Path $customizedRepo '.pre-commit-config.yaml')
+Assert-True ($customizedConfigReal -match 'trailing-whitespace') 'sanity: the setup run produced the base trailing-whitespace hook to customize'
+$excludeLine = "        exclude: '^app/main\.py$'"
+$customizedConfigDoctored = $customizedConfigReal -replace '(?m)(^\s*-\s*id:\s*trailing-whitespace\s*$)', ("`$1`n# Excluido a mano: errores de espacios preexistentes en app/main.py`n# bloquearian cada commit hasta una limpieza dedicada aparte (ADS-BUG-020).`n" + $excludeLine)
+Assert-True ($customizedConfigDoctored -ne $customizedConfigReal) 'sanity: the doctoring actually changed the file (the exclude + comment were really inserted)'
+Write-Utf8NoBomFile -Path (Join-Path $customizedRepo '.pre-commit-config.yaml') -Content $customizedConfigDoctored
+$rCustomized = Invoke-InitRepo -RepoPath $customizedRepo
+Assert-True ($rCustomized.ExitCode -eq 0) 'init-repo.ps1 exits 0 when it finds a customized kit-managed config' "exit=$($rCustomized.ExitCode) stderr=$($rCustomized.Stderr)"
+$customizedConfigAfter = Read-TextFile -Path (Join-Path $customizedRepo '.pre-commit-config.yaml')
+Assert-True ($customizedConfigAfter -eq $customizedConfigDoctored) 'the customized config (exclude + comment) is preserved BYTE-IDENTICAL -- never silently overwritten' "before=$customizedConfigDoctored after=$customizedConfigAfter"
+Assert-True ($rCustomized.Stdout -match 'Config personalizado detectado') 'init-repo.ps1 reports that it detected a customized config'
+Assert-True ($rCustomized.Stdout -match [regex]::Escape("exclude: '^app/main")) 'the warning output actually LISTS the detected custom line (the exclude), not just a generic notice' "stdout=$($rCustomized.Stdout)"
+Assert-True ($rCustomized.Stdout -match 'ADS-BUG-020') 'the warning output also surfaces the hand-written explanatory comment, not only the exclude line itself'
+$customizedClaudeMd = Read-TextFile -Path (Join-Path $customizedRepo 'CLAUDE.md')
+Assert-True ($customizedClaudeMd -match 'tiene agregados propios') 'CLAUDE.md uses the distinct "Customized" wording, not the generic "never was ours" foreign-config wording' "claudeMd=$customizedClaudeMd"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2q (lesson 4, item 4b): a PRISTINE kit config (no customization) still regenerates freely on re-run ==='
+$pristineRepo = New-FakeGitRepo -Name 'fake-pristine-repo'
+Write-Utf8NoBomFile -Path (Join-Path $pristineRepo 'README.md') -Content "# generic repo, no customization ever`n"
+Push-Location -LiteralPath $pristineRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rPristine1 = Invoke-InitRepo -RepoPath $pristineRepo
+Assert-True ($rPristine1.ExitCode -eq 0) 'first run on the pristine repo exits 0' "exit=$($rPristine1.ExitCode)"
+$rPristine2 = Invoke-InitRepo -RepoPath $pristineRepo
+Assert-True ($rPristine2.ExitCode -eq 0) 'second run on the still-pristine repo exits 0' "exit=$($rPristine2.ExitCode)"
+Assert-True ($rPristine2.Stdout -match [regex]::Escape('Escribi .pre-commit-config.yaml')) 'a pristine (never hand-edited) config keeps going through the normal write path on re-run, not the preserve path' "stdout=$($rPristine2.Stdout)"
+Assert-True ($rPristine2.Stdout -notmatch 'Config personalizado detectado') 'a pristine config never triggers the customization warning -- only a real difference does'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2r (lesson 4, item 4c, THE EXACT MCP-2-ON-MAIN SHAPE): unittest hook + ADS-BUG-020 exclude together are preserved byte-identical ==='
+# Combines everything from this whole arc into the one real shape that
+# actually exists on MCP-2's main branch: a validated, working unittest
+# pre-push hook (nested app\tests, lessons 3/3b/3c) PLUS the hand-added
+# ADS-BUG-020 exclude/comment (lesson 4) in the SAME file at the same time.
+$mcp2MainRepo = New-FakeGitRepo -Name 'fake-mcp2-main-shape-repo'
+New-Item -ItemType Directory -Path (Join-Path $mcp2MainRepo 'app\tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $mcp2MainRepo 'app\main.py') -Content "def add(a, b):`n    return a + b`n"
+Write-Utf8NoBomFile -Path (Join-Path $mcp2MainRepo 'app\tests\__init__.py') -Content ''
+Write-Utf8NoBomFile -Path (Join-Path $mcp2MainRepo 'app\tests\test_main.py') -Content "import unittest`nfrom main import add`n`nclass TestMain(unittest.TestCase):`n    def test_add(self):`n        self.assertEqual(add(1, 2), 3)`n"
+Push-Location -LiteralPath $mcp2MainRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rMcp2MainSetup = Invoke-InitRepo -RepoPath $mcp2MainRepo
+Assert-True ($rMcp2MainSetup.ExitCode -eq 0) 'sanity: the setup run (no pytest.ini here, pure unittest shape) exits 0' "exit=$($rMcp2MainSetup.ExitCode)"
+$mcp2MainConfigReal = Read-TextFile -Path (Join-Path $mcp2MainRepo '.pre-commit-config.yaml')
+Assert-True ($mcp2MainConfigReal -match 'unittest-pre-push') 'sanity: the setup run produced the real unittest pre-push hook'
+$mcp2MainExcludeLine = "        exclude: '^app/main\.py$'"
+$mcp2MainConfigDoctored = $mcp2MainConfigReal -replace '(?m)(^\s*-\s*id:\s*trailing-whitespace\s*$)', ("`$1`n# Excluido a mano: errores de espacios preexistentes en app/main.py`n# bloquearian cada commit hasta una limpieza dedicada aparte (ADS-BUG-020).`n" + $mcp2MainExcludeLine)
+Assert-True ($mcp2MainConfigDoctored -ne $mcp2MainConfigReal) 'sanity: the doctoring actually inserted the ADS-BUG-020 exclude + comment'
+Write-Utf8NoBomFile -Path (Join-Path $mcp2MainRepo '.pre-commit-config.yaml') -Content $mcp2MainConfigDoctored
+Push-Location -LiteralPath $mcp2MainRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'ads-bug-020 exclude') } finally { Pop-Location }
+$rMcp2Main = Invoke-InitRepo -RepoPath $mcp2MainRepo
+Assert-True ($rMcp2Main.ExitCode -eq 0) 'init-repo.ps1 exits 0 on the exact MCP-2-on-main shape' "exit=$($rMcp2Main.ExitCode) stderr=$($rMcp2Main.Stderr)"
+$mcp2MainConfigAfter = Read-TextFile -Path (Join-Path $mcp2MainRepo '.pre-commit-config.yaml')
+Assert-True ($mcp2MainConfigAfter -eq $mcp2MainConfigDoctored) 'the unittest hook AND the ADS-BUG-020 exclude are BOTH preserved byte-identical together -- the exact real incident this whole arc protects against' "before=$mcp2MainConfigDoctored after=$mcp2MainConfigAfter"
+Assert-True ($rMcp2Main.Stdout -match [regex]::Escape('todavia funciona -- lo mantengo tal cual')) 'the existing unittest hook is still separately confirmed as still working (lessons 3b/3c), on top of the item-4 customization protection'
+Assert-True ($rMcp2Main.Stdout -match 'Config personalizado detectado') 'the customization safety net also reports explicitly'
+Assert-True (Test-Path -LiteralPath (Join-Path $mcp2MainRepo '.git\hooks\pre-push')) 'the real git pre-push hook (installed during setup) is still in place'
 
 # ------------------------------------------------------------------
 # TEST GROUP 3: cross-review.ps1 -DryRun (never calls a real AI in this suite)

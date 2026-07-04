@@ -1,9 +1,12 @@
 # Generado y mantenido por quality-kit (init-repo.ps1) -- QUALITY-KIT MANAGED.
-# Seguro de volver a generar: init-repo.ps1 reconstruye este archivo entero
-# cada vez que corre, siempre que encuentre esta misma marca al principio.
-# Si queres reglas propias, agregalas en un archivo aparte
-# (.pre-commit-config.local.yaml) o pedile a quien mantiene este kit que
-# sume un fragmento nuevo en quality-kit\templates\.
+# Si este archivo es EXACTAMENTE igual a lo que init-repo.ps1 generaria hoy
+# para el stack detectado, es seguro de volver a generar cada vez que
+# corre. Si le agregaste algo propio directo aca (una linea "exclude:", un
+# comentario explicandola, un hook nuevo, args editados), init-repo.ps1 lo
+# va a detectar y va a dejar el archivo tal cual esta, avisando -- nunca
+# se pisa una personalizacion en silencio. Para sumar algo propio de forma
+# permanente, agregalo directo en este archivo (no hace falta un archivo
+# aparte: pre-commit no fusiona varios archivos de config de todas formas).
 #
 # Este bloque base (pre-commit-hooks) se incluye SIEMPRE, sin importar el
 # stack detectado -- son chequeos genericos de higiene de archivo que

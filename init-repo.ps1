@@ -12,6 +12,18 @@
 # of the same name -- it skips those and tells you so, rather than
 # clobbering something you already had.
 #
+# Custom rules CAN live directly inside .pre-commit-config.yaml -- an
+# earlier version of this comment pointed customizations at a separate
+# ".pre-commit-config.local.yaml" file, but pre-commit does not natively
+# merge multiple config files, so that advice was a dead end nobody could
+# actually follow. Real incident this protects against now: another AI
+# session added a documented "exclude:" line (with its own explanatory
+# comment) directly in this file for a legitimate reason, and a later
+# full-file regeneration silently deleted it. init-repo.ps1 now detects
+# when the existing file differs from what it would generate today in ANY
+# way -- not just "not ours at all" -- and preserves it untouched rather
+# than guessing whether the difference is safe to overwrite.
+#
 # PowerShell 5.1 (Windows PowerShell) compatible on purpose: no ternary /
 # null-coalescing operators, explicit -Encoding on every text read, and
 # every Where-Object result destined for a .Count check is wrapped in
@@ -685,19 +697,78 @@ function Build-PreCommitConfigContent {
     return [PSCustomObject]@{ Content = $content; Components = $components }
 }
 
+# Lines present in $ExistingText but NOT present anywhere in
+# $CandidateText -- a deliberately simple line-set difference (not a real
+# diff algorithm), good enough to surface an added "exclude:" key or an
+# explanatory comment a person added by hand, without needing anything
+# fancier than that for this purpose.
+function Get-CustomLines {
+    param([string]$ExistingText, [string]$CandidateText)
+    $existingLines = @($ExistingText -split "`r?`n")
+    $candidateLinesSet = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($line in @($CandidateText -split "`r?`n")) { $candidateLinesSet.Add($line) | Out-Null }
+    $custom = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $existingLines) {
+        if (-not $candidateLinesSet.Contains($line)) { $custom.Add($line) }
+    }
+    # Leading comma: PowerShell 5.1 unrolls a returned collection into the
+    # pipeline instead of handing back the list object itself (the same
+    # real gotcha documented at Get-PythonTestRunnerCandidates above) --
+    # without it, zero or one detected custom lines would come back as
+    # $null or a bare string instead of a real (possibly empty) list.
+    return ,$custom
+}
+
 function Write-PreCommitConfigIfSafe {
+    # Returns one of three outcomes, not a plain bool, so the rest of the
+    # script (and the Calidad doc) can tell apart "we never touched this
+    # because it's not ours" from "we never touched this because it's
+    # ours but customized" -- they need different, honest messages.
+    #   'Written'    -> we wrote/regenerated the file, safe to describe our hooks.
+    #   'Foreign'    -> the file exists and was never quality-kit's to begin with.
+    #   'Customized' -> the file is kit-managed but differs from what we'd
+    #                   generate today; preserved untouched, customization warned.
     param([string]$RepoPath, [string]$NewContent)
     $configPath = Join-Path $RepoPath '.pre-commit-config.yaml'
     if (Test-Path -LiteralPath $configPath) {
         $existing = Read-TextFile -Path $configPath
         if ($null -ne $existing -and $existing -notmatch [regex]::Escape($PreCommitConfigMarker)) {
             Write-Host "==> Ya existe .pre-commit-config.yaml y NO fue generado por quality-kit -- no lo toco, para no pisar tu configuracion."
-            return $false
+            return 'Foreign'
+        }
+        if ($null -ne $existing -and $existing -ne $NewContent) {
+            # THE FIX (real incident, twice): a kit-managed file that
+            # differs in ANY way from what init-repo.ps1 would generate
+            # today (for the current detected stack, and reusing an
+            # already-validated test hook verbatim per the never-degrade
+            # fixes above) is NOT assumed stale -- it might carry a real,
+            # deliberate customization someone added directly in the file
+            # (confirmed live: a documented "exclude:" line with its own
+            # explanatory comment, added by another AI session for a real
+            # reason). A full-file rewrite used to delete that silently.
+            # Never again: ANY difference means preserve the file exactly
+            # as it is, and say so loudly -- never guess which differences
+            # are "safe" to overwrite. This also means a repo whose stack
+            # genuinely changed since the last run will now ALSO be left
+            # alone here rather than silently upgraded -- an intentional
+            # trade-off (erring toward never touching a file someone may
+            # have hand-edited) confirmed and accepted for this kit.
+            $customLines = Get-CustomLines -ExistingText $existing -CandidateText $NewContent
+            Write-Host '==> Config personalizado detectado -- se conserva .pre-commit-config.yaml tal cual, no se sobreescribe.'
+            $realCustomLines = @($customLines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($realCustomLines.Count -gt 0) {
+                Write-Host '    Lineas que el kit no reconoce (probablemente algo agregado a mano):'
+                foreach ($line in $realCustomLines) {
+                    Write-Host "      $($line.Trim())"
+                }
+            }
+            Write-Host '    Si el kit necesita actualizar sus propios fragmentos aca, fusiona a mano (o pedile a una IA con contexto de este archivo que lo haga) -- init-repo.ps1 no fusiona automaticamente.'
+            return 'Customized'
         }
     }
     Write-Utf8NoBomFile -Path $configPath -Content $NewContent
     Write-Host '==> Escribi .pre-commit-config.yaml'
-    return $true
+    return 'Written'
 }
 
 # ------------------------------------------------------------------
@@ -729,11 +800,11 @@ function Copy-QualityWorkflowIfSafe {
 # ------------------------------------------------------------------
 
 function Get-CalidadSectionBody {
-    param([hashtable]$Detected, [System.Collections.Generic.List[string]]$Components, [bool]$ConfigWritten, [string]$SkippedTestWarning = '')
+    param([hashtable]$Detected, [System.Collections.Generic.List[string]]$Components, [string]$ConfigOutcome, [string]$SkippedTestWarning = '')
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add('## Calidad (quality-kit)')
     $lines.Add('')
-    if ($ConfigWritten) {
+    if ($ConfigOutcome -eq 'Written') {
         $lines.Add('Candados de commit instalados (pre-commit):')
         foreach ($c in $Components) { $lines.Add("- $c") }
         $lines.Add('')
@@ -742,6 +813,14 @@ function Get-CalidadSectionBody {
         if ($Detected.PythonTestRunner -eq 'pytest') { $lines.Add("- ``$($Detected.PytestEntryCmd)`` (pruebas, normalmente corren solas en cada ``git push``)") }
         if ($Detected.PythonTestRunner -eq 'unittest') { $lines.Add("- ``$($Detected.UnittestEntryCmd)`` (pruebas, normalmente corren solas en cada ``git push``)") }
         if ($Detected.NpmTest) { $lines.Add('- `npm test` (pruebas, normalmente corren solas en cada `git push`)') }
+    } elseif ($ConfigOutcome -eq 'Customized') {
+        # Kit-managed, but it now differs from what we'd generate today --
+        # someone (or another AI) added something directly in the file.
+        # Never claim ownership of hooks we didn't actually write; point at
+        # the real file instead, same as the "foreign" case, but honestly
+        # worded (this file genuinely started as ours).
+        $lines.Add('Este archivo `.pre-commit-config.yaml` tiene agregados propios (detectados por quality-kit) -- no lo pisamos.')
+        $lines.Add('Para ver que candados tiene realmente: `pre-commit run --all-files` (o mira `.pre-commit-config.yaml`).')
     } else {
         # This repo already had its own .pre-commit-config.yaml before
         # quality-kit ever ran here -- init-repo.ps1 never overwrites a
@@ -896,7 +975,8 @@ if ($detected.Python) {
 }
 
 $built = Build-PreCommitConfigContent -RepoPath $RepoPath -Detected $detected
-$configWritten = Write-PreCommitConfigIfSafe -RepoPath $RepoPath -NewContent $built.Content
+$configOutcome = Write-PreCommitConfigIfSafe -RepoPath $RepoPath -NewContent $built.Content
+$configWritten = ($configOutcome -eq 'Written')
 
 $invoker = Get-PreCommitInvoker
 Write-Host "==> Usando pre-commit via: $($invoker.Exe) $($invoker.ArgsPrefix -join ' ')"
@@ -924,15 +1004,17 @@ if ($hasGithubRemote) {
     Write-Host '==> Sin remoto de GitHub todavia -- salteo la nube (.github\workflows\quality.yml). Se activa solo el dia que subas este repo a GitHub; volve a correr este script despues.'
 }
 
-$sectionBody = Get-CalidadSectionBody -Detected $detected -Components $built.Components -ConfigWritten $configWritten -SkippedTestWarning $skippedTestWarning
+$sectionBody = Get-CalidadSectionBody -Detected $detected -Components $built.Components -ConfigOutcome $configOutcome -SkippedTestWarning $skippedTestWarning
 Update-CalidadDoc -DocPath (Join-Path $RepoPath 'CLAUDE.md') -SectionBody $sectionBody
 Update-CalidadDoc -DocPath (Join-Path $RepoPath 'AGENTS.md') -SectionBody $sectionBody
 
 Write-Host ''
 Write-Host '=== Resumen ==='
 Write-Host "Stack: $stackLabel"
-if ($configWritten) {
+if ($configOutcome -eq 'Written') {
     Write-Host "Candados configurados: $($built.Components -join ', ')"
+} elseif ($configOutcome -eq 'Customized') {
+    Write-Host 'Candados configurados: (el .pre-commit-config.yaml tiene agregados propios -- no se toco, ver arriba)'
 } else {
     Write-Host 'Candados configurados: (el repo ya tenia su propio .pre-commit-config.yaml -- no se toco)'
 }
