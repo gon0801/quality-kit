@@ -144,6 +144,105 @@ function Invoke-PreCommit {
 }
 
 # ------------------------------------------------------------------
+# Verify-before-enable: the core lesson from a real deploy incident (MCP-2).
+# A pre-push test hook that structurally fails (wrong runner, or the runner
+# itself crashing on this machine -- confirmed live: pytest 9.0.3 on Python
+# 3.14 hit an internal "ValueError: I/O operation on closed file" during
+# capture teardown) is WORSE than no hook at all: it blocks every push for a
+# reason that has nothing to do with the code being pushed. So the chosen
+# runner is always actually run once, cheaply, before init-repo.ps1 ever
+# writes a pre-push hook for it. If that trial run fails for ANY structural
+# reason (crash, non-zero exit, or it does not even finish in time), no
+# pre-push hook is installed at all -- a loud warning explains why and how
+# to add it back by hand once it is fixed.
+# ------------------------------------------------------------------
+
+# Runs an external command with redirected stdio and a hard timeout,
+# without risking the classic parent-process deadlock: reading stdout and
+# stderr via ReadToEndAsync BEFORE WaitForExit means both streams drain
+# concurrently, so neither can back up and block the child if it writes a
+# lot to both (confirmed live: sequential .ReadToEnd() calls do not exhibit
+# this here with small output, but there is no reason to rely on that
+# holding for an arbitrary test suite's real output).
+function Invoke-CommandWithTimeout {
+    param([string]$Exe, [string]$Arguments, [string]$WorkingDirectory, [int]$TimeoutSeconds = 30)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = $Arguments
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    try {
+        $proc.Start() | Out-Null
+    } catch {
+        return [PSCustomObject]@{ TimedOut = $false; ExitCode = -1; Stdout = ''; Stderr = "No se pudo iniciar '$Exe': $_" }
+    }
+    $proc.StandardInput.Close()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $finished = $proc.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $finished) {
+        try { $proc.Kill() } catch {
+            # Best-effort: if the process already exited between the
+            # WaitForExit timeout and this Kill call, that is fine too.
+        }
+        return [PSCustomObject]@{ TimedOut = $true; ExitCode = -1; Stdout = ''; Stderr = '' }
+    }
+    $stdout = ''
+    $stderr = ''
+    try { $stdout = $stdoutTask.Result } catch {}
+    try { $stderr = $stderrTask.Result } catch {}
+    return [PSCustomObject]@{ TimedOut = $false; ExitCode = $proc.ExitCode; Stdout = $stdout; Stderr = $stderr }
+}
+
+function Get-ValidationFailureDetail {
+    param($Result)
+    if ($Result.TimedOut) { return 'no termino dentro del tiempo esperado (se cancelo)' }
+    $tail = ($Result.Stderr + "`n" + $Result.Stdout).Trim()
+    if ($tail.Length -gt 300) { $tail = $tail.Substring($tail.Length - 300) }
+    $detail = "codigo de salida $($Result.ExitCode)"
+    if ($tail) { $detail = $detail + ': ' + $tail }
+    return $detail
+}
+
+# Validates the chosen runner by actually invoking it once, cheaply:
+#   - pytest: "--collect-only" collects tests without running them -- fast,
+#     and still catches a crashing pytest installation (exactly the MCP-2
+#     failure mode) or a genuinely wrong runner choice.
+#   - unittest: the standard library's unittest CLI has no equivalent
+#     collect-only mode (confirmed: "python -m unittest -h" lists no such
+#     flag), so validating it means actually running the discovered tests
+#     once, with -f (failfast) and -q (quiet) to keep this cheap and to
+#     stop at the first problem rather than running a whole slow suite.
+function Test-PythonRunnerValidates {
+    param([string]$RepoPath, [string]$PythonExeForHook, [PSCustomObject]$RunnerPlan)
+    if ($RunnerPlan.Type -eq 'pytest') {
+        $result = Invoke-CommandWithTimeout -Exe $PythonExeForHook -Arguments '-m pytest --collect-only -q' -WorkingDirectory $RepoPath -TimeoutSeconds 30
+        if ($result.TimedOut -or $result.ExitCode -ne 0) {
+            return [PSCustomObject]@{ Ok = $false; Detail = (Get-ValidationFailureDetail $result) }
+        }
+        return [PSCustomObject]@{ Ok = $true; Detail = '' }
+    }
+    if ($RunnerPlan.Type -eq 'unittest') {
+        $workDir = $RepoPath
+        if ($null -ne $RunnerPlan.TestsDirInfo.ParentSubdir) {
+            $workDir = Join-Path $RepoPath $RunnerPlan.TestsDirInfo.ParentSubdir
+        }
+        $arguments = "-m unittest discover -s $($RunnerPlan.TestsDirInfo.StartDir) -t . -f -q"
+        $result = Invoke-CommandWithTimeout -Exe $PythonExeForHook -Arguments $arguments -WorkingDirectory $workDir -TimeoutSeconds 30
+        if ($result.TimedOut -or $result.ExitCode -ne 0) {
+            return [PSCustomObject]@{ Ok = $false; Detail = (Get-ValidationFailureDetail $result) }
+        }
+        return [PSCustomObject]@{ Ok = $true; Detail = '' }
+    }
+    return [PSCustomObject]@{ Ok = $false; Detail = 'tipo de runner desconocido' }
+}
+
+# ------------------------------------------------------------------
 # Stack / tooling detection
 # ------------------------------------------------------------------
 
@@ -215,14 +314,96 @@ function Test-HasPrettierConfig {
 
 function Test-HasPytestConfig {
     param([string]$RepoPath)
+    # Config files ONLY -- deliberately does NOT treat "a tests/ dir exists"
+    # as pytest config by itself anymore (real-world bug: MCP-2's tests/ is
+    # unittest-based, not pytest, and the old version of this function
+    # folded "has a tests dir" into "has pytest", so init-repo.ps1 always
+    # assumed pytest -x -q was the right command regardless of what the
+    # tests actually were). Whether a bare tests/ dir with no config at all
+    # should still try pytest (the common no-config pytest style) is decided
+    # by Get-PythonTestRunnerPlan, not here.
     if (Test-Path -LiteralPath (Join-Path $RepoPath 'pytest.ini')) { return $true }
     $pyproject = Read-TextFile -Path (Join-Path $RepoPath 'pyproject.toml')
     if ($null -ne $pyproject -and $pyproject -match '(?m)^\[tool\.pytest\.ini_options\]') { return $true }
     $setupCfg = Read-TextFile -Path (Join-Path $RepoPath 'setup.cfg')
     if ($null -ne $setupCfg -and $setupCfg -match '(?m)^\[tool:pytest\]') { return $true }
-    if (Test-Path -LiteralPath (Join-Path $RepoPath 'tests') -PathType Container) { return $true }
-    if (Test-Path -LiteralPath (Join-Path $RepoPath 'test') -PathType Container) { return $true }
     return $false
+}
+
+# Locates a tests directory either at the repo root, or ONE level nested
+# inside a subdirectory (the MCP-2 shape: app\tests, with the real project
+# living under app\ and no tests/ at the repo root at all). Deliberately
+# shallow (not a deep recursive search like the Python-file detector above)
+# -- this is specifically about finding the ONE tests directory a test
+# runner should be pointed at, not a general file search.
+function Find-TestsDir {
+    param([string]$RepoPath)
+    foreach ($name in @('tests', 'test')) {
+        if (Test-Path -LiteralPath (Join-Path $RepoPath $name) -PathType Container) {
+            return [PSCustomObject]@{ Found = $true; StartDir = $name; ParentSubdir = $null }
+        }
+    }
+    $subDirs = @(Get-ChildItem -LiteralPath $RepoPath -Directory -ErrorAction SilentlyContinue | Where-Object { $PySearchExcludedDirNames -notcontains $_.Name })
+    foreach ($sub in $subDirs) {
+        foreach ($name in @('tests', 'test')) {
+            if (Test-Path -LiteralPath (Join-Path $sub.FullName $name) -PathType Container) {
+                return [PSCustomObject]@{ Found = $true; StartDir = $name; ParentSubdir = $sub.Name }
+            }
+        }
+    }
+    return [PSCustomObject]@{ Found = $false; StartDir = $null; ParentSubdir = $null }
+}
+
+# Real signal that a repo's tests are written against the standard library's
+# unittest module (as opposed to plain pytest-style "def test_x():"
+# functions, which need no such import) -- confirmed against MCP-2's actual
+# test files, which import unittest and subclass unittest.TestCase.
+function Test-TestsDirUsesUnittest {
+    param([string]$RepoPath, [PSCustomObject]$TestsDirInfo)
+    if (-not $TestsDirInfo.Found) { return $false }
+    $base = $RepoPath
+    if ($null -ne $TestsDirInfo.ParentSubdir) { $base = Join-Path $RepoPath $TestsDirInfo.ParentSubdir }
+    $testsPath = Join-Path $base $TestsDirInfo.StartDir
+    $pyFiles = @(Get-ChildItem -LiteralPath $testsPath -Filter '*.py' -File -Recurse -ErrorAction SilentlyContinue)
+    foreach ($f in $pyFiles) {
+        $content = Read-TextFile -Path $f.FullName
+        if ($null -ne $content -and ($content -match '(?m)^\s*import unittest\b' -or $content -match '(?m)^\s*from unittest\b' -or $content -match 'unittest\.TestCase')) {
+            return $true
+        }
+    }
+    return $false
+}
+
+# Decides which Python test runner to ATTEMPT, in the priority order the
+# real MCP-2 incident calls for:
+#   a. An actual pytest config file -> pytest (highest confidence).
+#   b. No pytest config, but the tests clearly import unittest /
+#      subclass TestCase -> unittest, matching MCP-2's real shape exactly
+#      (this is the fix for bug #1: assuming pytest just because a tests/
+#      dir existed, when the repo's tests were never pytest's to run).
+#   c. No pytest config, no unittest signal -> still attempt pytest as the
+#      default (this is by far the most common shape for undecorated
+#      "def test_x():" style tests, which need neither a config file nor a
+#      unittest import to work correctly under pytest -- treating this as
+#      an outright "unclear, skip" would regress the single most common
+#      real-world case). Whether that guess actually works is exactly what
+#      Test-PythonRunnerValidates below checks BEFORE anything gets
+#      installed -- that verification, not a perfect guess here, is the
+#      real fix for bug #2 (a test command that structurally fails must
+#      never become an installed gate).
+function Get-PythonTestRunnerPlan {
+    param([string]$RepoPath)
+    $testsDirInfo = Find-TestsDir -RepoPath $RepoPath
+    if (-not $testsDirInfo.Found) {
+        return [PSCustomObject]@{ Type = 'none'; TestsDirInfo = $testsDirInfo }
+    }
+    if (Test-HasPytestConfig -RepoPath $RepoPath) {
+        return [PSCustomObject]@{ Type = 'pytest'; TestsDirInfo = $testsDirInfo }
+    }
+    if (Test-TestsDirUsesUnittest -RepoPath $RepoPath -TestsDirInfo $testsDirInfo) {
+        return [PSCustomObject]@{ Type = 'unittest'; TestsDirInfo = $testsDirInfo }
+    }
+    return [PSCustomObject]@{ Type = 'pytest'; TestsDirInfo = $testsDirInfo }
 }
 
 # npm's own `npm init` default is a placeholder that always fails; only a
@@ -280,11 +461,17 @@ function Build-PreCommitConfigContent {
         $content += (Read-TextFile -Path (Join-Path $TemplatesDir 'pre-commit-node-prettier.yaml'))
         $components.Add('prettier (config existente del repo)')
     }
-    if ($Detected.Pytest) {
+    if ($Detected.PythonTestRunner -eq 'pytest') {
         $pytestFragment = Read-TextFile -Path (Join-Path $TemplatesDir 'pre-commit-test-pytest.yaml')
         $pytestFragment = $pytestFragment.Replace('<PYTHON_EXE>', $PythonExeForHook)
         $content += $pytestFragment
         $components.Add('pytest -x -q (pre-push)')
+    }
+    if ($Detected.PythonTestRunner -eq 'unittest') {
+        $unittestFragment = Read-TextFile -Path (Join-Path $TemplatesDir 'pre-commit-test-unittest.yaml')
+        $unittestFragment = $unittestFragment.Replace('<UNITTEST_ENTRY_CMD>', $Detected.UnittestEntryCmd)
+        $content += $unittestFragment
+        $components.Add('unittest discover (pre-push)')
     }
     if ($Detected.NpmTest) {
         $content += (Read-TextFile -Path (Join-Path $TemplatesDir 'pre-commit-test-npm.yaml'))
@@ -338,7 +525,7 @@ function Copy-QualityWorkflowIfSafe {
 # ------------------------------------------------------------------
 
 function Get-CalidadSectionBody {
-    param([hashtable]$Detected, [string]$PythonExeForHook, [System.Collections.Generic.List[string]]$Components, [bool]$ConfigWritten)
+    param([hashtable]$Detected, [string]$PythonExeForHook, [System.Collections.Generic.List[string]]$Components, [bool]$ConfigWritten, [string]$SkippedTestWarning = '')
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add('## Calidad (quality-kit)')
     $lines.Add('')
@@ -348,7 +535,8 @@ function Get-CalidadSectionBody {
         $lines.Add('')
         $lines.Add('Comandos para correr los candados a mano:')
         $lines.Add('- `pre-commit run --all-files` (todos los candados de commit)')
-        if ($Detected.Pytest) { $lines.Add("- ``$PythonExeForHook -m pytest -x -q`` (pruebas, normalmente corren solas en cada ``git push``)") }
+        if ($Detected.PythonTestRunner -eq 'pytest') { $lines.Add("- ``$PythonExeForHook -m pytest -x -q`` (pruebas, normalmente corren solas en cada ``git push``)") }
+        if ($Detected.PythonTestRunner -eq 'unittest') { $lines.Add("- ``$($Detected.UnittestEntryCmd)`` (pruebas, normalmente corren solas en cada ``git push``)") }
         if ($Detected.NpmTest) { $lines.Add('- `npm test` (pruebas, normalmente corren solas en cada `git push`)') }
     } else {
         # This repo already had its own .pre-commit-config.yaml before
@@ -358,6 +546,10 @@ function Get-CalidadSectionBody {
         # of truth instead.
         $lines.Add('Este repo ya tenia su propia configuracion de pre-commit antes de quality-kit -- no la pisamos.')
         $lines.Add('Para ver que candados tiene realmente: `pre-commit run --all-files` (o mira `.pre-commit-config.yaml`).')
+    }
+    if ($SkippedTestWarning) {
+        $lines.Add('')
+        $lines.Add("ADVERTENCIA: $SkippedTestWarning")
     }
     $lines.Add('')
     $lines.Add('Reglas de hierro:')
@@ -410,16 +602,14 @@ $detected = @{
     Node    = (Test-HasNodeStack -RepoPath $RepoPath)
     Eslint  = $false
     Prettier = $false
-    Pytest  = $false
+    PythonTestRunner = 'none'
+    UnittestEntryCmd = ''
     NpmTest = $false
 }
 if ($detected.Node) {
     $detected.Eslint = (Test-HasEslintConfig -RepoPath $RepoPath -PackageJson $packageJson)
     $detected.Prettier = (Test-HasPrettierConfig -RepoPath $RepoPath -PackageJson $packageJson)
     $detected.NpmTest = (Test-HasRealNpmTestScript -PackageJson $packageJson)
-}
-if ($detected.Python) {
-    $detected.Pytest = (Test-HasPytestConfig -RepoPath $RepoPath)
 }
 
 $stackLabel = 'generico (ni Python ni Node detectados -- solo los chequeos base)'
@@ -429,11 +619,52 @@ elseif ($detected.Node) { $stackLabel = 'Node' }
 Write-Host "Stack detectado: $stackLabel"
 
 $pythonExeForHook = $null
-if ($detected.Pytest) {
-    $pythonExeForHook = Get-RepoPythonExe -RepoPath $RepoPath
-    if (-not $pythonExeForHook) {
-        Write-Host '==> ADVERTENCIA: se detecto pytest pero no encontre ningun Python utilizable en esta maquina; el hook de pre-push para pytest no va a funcionar hasta que instales Python.'
-        $pythonExeForHook = 'python'
+$skippedTestWarning = ''
+if ($detected.Python) {
+    $runnerPlan = Get-PythonTestRunnerPlan -RepoPath $RepoPath
+    if ($runnerPlan.Type -ne 'none') {
+        $pythonExeForHook = Get-RepoPythonExe -RepoPath $RepoPath
+        if (-not $pythonExeForHook) {
+            Write-Host "==> ADVERTENCIA: se detectaron pruebas de Python ($($runnerPlan.Type)) pero no encontre ningun Python utilizable en esta maquina -- no se instala el candado de pre-push. Instala Python y volve a correr este script."
+            $skippedTestWarning = "no se instalo el candado de pruebas (pre-push) porque no se encontro Python en esta maquina para correrlas. Instala Python y volve a correr init-repo.ps1."
+        } else {
+            if ($runnerPlan.Type -eq 'unittest') {
+                if ($null -ne $runnerPlan.TestsDirInfo.ParentSubdir) {
+                    # Mirrors the real hand-fix from the MCP-2 incident
+                    # exactly: a nested tests dir (e.g. app\tests) needs a
+                    # directory change before running discover, and a
+                    # pre-commit "repo: local" hook has no working-directory
+                    # key of its own -- "bash -c 'cd ... && ...'" is how the
+                    # actual fix expressed that, and bash ships with any Git
+                    # install (already a hard prerequisite for pre-commit
+                    # itself), so it is always available where this runs.
+                    $detected.UnittestEntryCmd = "bash -c 'cd $($runnerPlan.TestsDirInfo.ParentSubdir) && $pythonExeForHook -m unittest discover -s $($runnerPlan.TestsDirInfo.StartDir) -t . 2>&1 | tail -5'"
+                } else {
+                    $detected.UnittestEntryCmd = "$pythonExeForHook -m unittest discover -s $($runnerPlan.TestsDirInfo.StartDir) -t ."
+                }
+            }
+            Write-Host "==> Verificando el runner de pruebas elegido ($($runnerPlan.Type)) antes de instalar el candado de pre-push..."
+            $validation = Test-PythonRunnerValidates -RepoPath $RepoPath -PythonExeForHook $pythonExeForHook -RunnerPlan $runnerPlan
+            if ($validation.Ok) {
+                $detected.PythonTestRunner = $runnerPlan.Type
+                Write-Host "==> El runner de pruebas ($($runnerPlan.Type)) funciona -- se instala el candado de pre-push."
+            } else {
+                # THE CORE LESSON: a test command that fails structurally
+                # (crashes, wrong runner, or just does not finish) is worse
+                # than no gate at all -- it blocks every push for a reason
+                # that has nothing to do with the code being pushed (this
+                # is exactly what happened live: pytest hit an internal
+                # "ValueError: I/O operation on closed file" during capture
+                # teardown on this Python version). So it is never
+                # installed; this is a loud, impossible-to-miss warning
+                # instead of a silently broken gate.
+                Write-Host ''
+                Write-Host "==> ADVERTENCIA: se detectaron pruebas de Python ($($runnerPlan.Type)) pero el comando fallo al verificarlo ($($validation.Detail)) -- NO se instala el candado de pre-push para no bloquear pushes por un problema del runner, no del codigo."
+                Write-Host '==> Para agregarlo a mano una vez que lo arregles: corre el comando de pruebas vos mismo hasta que funcione, despues volve a correr init-repo.ps1.'
+                Write-Host ''
+                $skippedTestWarning = "se detectaron pruebas de Python ($($runnerPlan.Type)) pero el comando fallo al verificarlo ($($validation.Detail)) -- el candado de pre-push NO se instalo a proposito. Corre las pruebas a mano hasta confirmarlas y volve a correr init-repo.ps1."
+            }
+        }
     }
 }
 
@@ -449,7 +680,7 @@ if ($installExit -ne 0) {
 }
 Write-Host '==> pre-commit install (pre-commit) listo'
 
-$needsPrePush = ($detected.Pytest -or $detected.NpmTest)
+$needsPrePush = (($detected.PythonTestRunner -ne 'none') -or $detected.NpmTest)
 if ($needsPrePush) {
     $prePushExit = Invoke-PreCommit -Invoker $invoker -CmdArgs @('install', '--hook-type', 'pre-push') -RepoPath $RepoPath
     if ($prePushExit -ne 0) {
@@ -466,7 +697,7 @@ if ($hasGithubRemote) {
     Write-Host '==> Sin remoto de GitHub todavia -- salteo la nube (.github\workflows\quality.yml). Se activa solo el dia que subas este repo a GitHub; volve a correr este script despues.'
 }
 
-$sectionBody = Get-CalidadSectionBody -Detected $detected -PythonExeForHook $pythonExeForHook -Components $built.Components -ConfigWritten $configWritten
+$sectionBody = Get-CalidadSectionBody -Detected $detected -PythonExeForHook $pythonExeForHook -Components $built.Components -ConfigWritten $configWritten -SkippedTestWarning $skippedTestWarning
 Update-CalidadDoc -DocPath (Join-Path $RepoPath 'CLAUDE.md') -SectionBody $sectionBody
 Update-CalidadDoc -DocPath (Join-Path $RepoPath 'AGENTS.md') -SectionBody $sectionBody
 
@@ -481,4 +712,7 @@ if ($configWritten) {
 Write-Host "Pre-push (pruebas): $needsPrePush"
 Write-Host "Workflow de CI copiado: $workflowWritten (remoto de GitHub detectado: $hasGithubRemote)"
 Write-Host "CLAUDE.md / AGENTS.md actualizados con la seccion Calidad."
+if ($skippedTestWarning) {
+    Write-Host "ADVERTENCIA: $skippedTestWarning"
+}
 Write-Host '=== Listo ==='

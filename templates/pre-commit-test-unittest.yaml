@@ -1,0 +1,23 @@
+# Fragmento de pruebas Python (unittest) -- se agrega SOLO si init-repo.ps1
+# detecta un directorio de pruebas que usa el modulo estandar "unittest" (no
+# pytest: sin config de pytest, pero los archivos importan unittest o
+# heredan de unittest.TestCase), Y despues de confirmar, corriendolo una
+# vez, que el comando de verdad funciona en esta maquina (ver
+# Test-PythonRunnerValidates en init-repo.ps1 -- si no funciona, este
+# fragmento no se agrega, se avisa en su lugar). Corre en PRE-PUSH, no en
+# pre-commit, por la misma razon que el fragmento de pytest: las pruebas
+# son demasiado lentas para cada commit.
+# <UNITTEST_ENTRY_CMD> lo arma init-repo.ps1: si el directorio de pruebas
+# esta en la raiz del repo, es un comando directo; si esta anidado (por
+# ejemplo app\tests, como en el caso real de MCP-2), es un "bash -c 'cd
+# app && ...'" para poder cambiar de directorio antes de correr las
+# pruebas (los hooks locales de pre-commit no tienen una clave de
+# directorio de trabajo propia).
+  - repo: local
+    hooks:
+      - id: unittest-pre-push
+        name: unittest (pre-push)
+        entry: <UNITTEST_ENTRY_CMD>
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

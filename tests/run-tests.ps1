@@ -277,6 +277,92 @@ Assert-True ($evolvingConfig2 -match 'ruff-check') 'the quality-kit-managed conf
 $evolvingMarkerCount = ([regex]::Matches($evolvingConfig2, [regex]::Escape('QUALITY-KIT MANAGED'))).Count
 Assert-True ($evolvingMarkerCount -eq 1) 'the regenerated config still carries exactly one quality-kit marker (clean regeneration, not an appended duplicate)'
 
+Write-Host ''
+Write-Host '=== TEST GROUP 2g (MCP-2 lesson, item 1a): an explicit pytest config wins even when unittest signal is ALSO present ==='
+$pytestConfigRepo = New-FakeGitRepo -Name 'fake-pytest-config-repo'
+Write-Utf8NoBomFile -Path (Join-Path $pytestConfigRepo 'pytest.ini') -Content "[pytest]`n"
+New-Item -ItemType Directory -Path (Join-Path $pytestConfigRepo 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $pytestConfigRepo 'tests\__init__.py') -Content ''
+Write-Utf8NoBomFile -Path (Join-Path $pytestConfigRepo 'tests\test_mixed.py') -Content "import unittest`n`nclass TestMixed(unittest.TestCase):`n    def test_ok(self):`n        self.assertEqual(1 + 1, 2)`n"
+Push-Location -LiteralPath $pytestConfigRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rPytestConfig = Invoke-InitRepo -RepoPath $pytestConfigRepo
+Assert-True ($rPytestConfig.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a repo with an explicit pytest.ini' "exit=$($rPytestConfig.ExitCode) stderr=$($rPytestConfig.Stderr)"
+$pytestConfigYaml = Read-TextFile -Path (Join-Path $pytestConfigRepo '.pre-commit-config.yaml')
+Assert-True ($pytestConfigYaml -match 'pytest-pre-push') 'pytest.ini being present selects the pytest runner even though the same test file also imports unittest' "config=$pytestConfigYaml"
+Assert-True (-not ($pytestConfigYaml -match 'unittest-pre-push')) 'the unittest hook is NOT also added when pytest.ini wins'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2h (MCP-2 lesson, item 1b): a ROOT tests/ dir using unittest, with NO pytest config, gets the unittest runner ==='
+$rootUnittestRepo = New-FakeGitRepo -Name 'fake-root-unittest-repo'
+New-Item -ItemType Directory -Path (Join-Path $rootUnittestRepo 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $rootUnittestRepo 'tests\__init__.py') -Content ''
+Write-Utf8NoBomFile -Path (Join-Path $rootUnittestRepo 'tests\test_thing.py') -Content "import unittest`n`nclass TestThing(unittest.TestCase):`n    def test_ok(self):`n        self.assertEqual(2 + 2, 4)`n"
+Push-Location -LiteralPath $rootUnittestRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rRootUnittest = Invoke-InitRepo -RepoPath $rootUnittestRepo
+Assert-True ($rRootUnittest.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a repo with root tests/ using unittest, no pytest config' "exit=$($rRootUnittest.ExitCode) stderr=$($rRootUnittest.Stderr)"
+$rootUnittestYaml = Read-TextFile -Path (Join-Path $rootUnittestRepo '.pre-commit-config.yaml')
+Assert-True ($rootUnittestYaml -match 'unittest-pre-push') 'root tests/ with a real unittest.TestCase and no pytest config selects the unittest runner' "config=$rootUnittestYaml"
+Assert-True ($rootUnittestYaml -match [regex]::Escape('-m unittest discover -s tests -t .')) 'the root-level unittest entry uses "-s tests -t ." with no cd/bash wrapper needed' "config=$rootUnittestYaml"
+Assert-True (-not ($rootUnittestYaml -match '(?m)^\s*entry:.*bash -c')) 'the root-level case''s actual entry line does NOT use the bash -c cd-into-parent wrapper (that is only for the nested case; the template''s explanatory comment mentions "bash -c" in prose, which is fine -- only the entry: line itself matters here)' "config=$rootUnittestYaml"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2i (MCP-2 lesson, item 1b, exact MCP-2 shape): a NESTED tests dir (app\tests) gets the cd-into-parent unittest variant ==='
+$mcp2ShapeRepo = New-FakeGitRepo -Name 'fake-mcp2-shape-repo'
+New-Item -ItemType Directory -Path (Join-Path $mcp2ShapeRepo 'app\tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $mcp2ShapeRepo 'app\main.py') -Content "def add(a, b):`n    return a + b`n"
+Write-Utf8NoBomFile -Path (Join-Path $mcp2ShapeRepo 'app\tests\__init__.py') -Content ''
+Write-Utf8NoBomFile -Path (Join-Path $mcp2ShapeRepo 'app\tests\test_main.py') -Content "import unittest`nfrom main import add`n`nclass TestMain(unittest.TestCase):`n    def test_add(self):`n        self.assertEqual(add(1, 2), 3)`n"
+Push-Location -LiteralPath $mcp2ShapeRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rMcp2Shape = Invoke-InitRepo -RepoPath $mcp2ShapeRepo
+Assert-True ($rMcp2Shape.ExitCode -eq 0) 'init-repo.ps1 exits 0 on the exact MCP-2 shape (app\tests, unittest, no pytest config)' "exit=$($rMcp2Shape.ExitCode) stderr=$($rMcp2Shape.Stderr)"
+$mcp2ShapeYaml = Read-TextFile -Path (Join-Path $mcp2ShapeRepo '.pre-commit-config.yaml')
+Assert-True ($mcp2ShapeYaml -match 'unittest-pre-push') 'the MCP-2 shape (nested app\tests, unittest) selects the unittest runner' "config=$mcp2ShapeYaml"
+Assert-True ($mcp2ShapeYaml -match [regex]::Escape("bash -c 'cd app && ")) 'the nested case cds into the parent subdirectory first, mirroring the real MCP-2 hand-fix' "config=$mcp2ShapeYaml"
+Assert-True ($mcp2ShapeYaml -match [regex]::Escape('-m unittest discover -s tests -t .')) 'the nested case still discovers with -s tests -t . once inside the parent dir' "config=$mcp2ShapeYaml"
+Assert-True ($rMcp2Shape.Stdout -match 'El runner de pruebas \(unittest\) funciona') 'init-repo.ps1 reports that it validated the unittest runner successfully before installing the hook'
+Assert-True (Test-Path -LiteralPath (Join-Path $mcp2ShapeRepo '.git\hooks\pre-push')) 'the real git pre-push hook was installed for the validated MCP-2 shape'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2j (MCP-2 lesson, item 2, THE CORE FIX): a runner that fails validation gets NO pre-push hook, plus a loud warning ==='
+# Real, reproducible failure mode (found while building this fix, not a
+# contrived one): a nested tests dir MISSING __init__.py makes Python's
+# own unittest discovery raise "ImportError: Start directory is not
+# importable" -- confirmed live on this machine. This is exactly the kind
+# of structural runner failure item 2 exists to catch before it ever
+# becomes an installed, push-blocking gate.
+$brokenRunnerRepo = New-FakeGitRepo -Name 'fake-broken-runner-repo'
+New-Item -ItemType Directory -Path (Join-Path $brokenRunnerRepo 'app\tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $brokenRunnerRepo 'app\main.py') -Content "def add(a, b):`n    return a + b`n"
+# Deliberately NO tests\__init__.py here.
+Write-Utf8NoBomFile -Path (Join-Path $brokenRunnerRepo 'app\tests\test_main.py') -Content "import unittest`nfrom main import add`n`nclass TestMain(unittest.TestCase):`n    def test_add(self):`n        self.assertEqual(add(1, 2), 3)`n"
+Push-Location -LiteralPath $brokenRunnerRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rBrokenRunner = Invoke-InitRepo -RepoPath $brokenRunnerRepo
+Assert-True ($rBrokenRunner.ExitCode -eq 0) 'init-repo.ps1 still exits 0 overall even when the test runner fails validation (a skipped hook is not a script error)' "exit=$($rBrokenRunner.ExitCode) stderr=$($rBrokenRunner.Stderr)"
+$brokenRunnerYaml = Read-TextFile -Path (Join-Path $brokenRunnerRepo '.pre-commit-config.yaml')
+Assert-True (-not ($brokenRunnerYaml -match 'unittest-pre-push|pytest-pre-push')) 'NO pre-push test hook of any kind was written when the chosen runner failed validation' "config=$brokenRunnerYaml"
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $brokenRunnerRepo '.git\hooks\pre-push'))) 'the real git pre-push hook was NOT installed at all (only pre-commit, since there is no pre-push hook to enable)'
+Assert-True ($rBrokenRunner.Stdout -match 'ADVERTENCIA.*fallo al verificarlo') 'init-repo.ps1 prints a loud, explicit warning that the runner failed validation' "stdout=$($rBrokenRunner.Stdout)"
+$brokenRunnerClaudeMd = Read-TextFile -Path (Join-Path $brokenRunnerRepo 'CLAUDE.md')
+Assert-True ($brokenRunnerClaudeMd -match 'ADVERTENCIA') 'the skipped-hook warning is also recorded in the Calidad section of CLAUDE.md, not just printed to the console'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2k (MCP-2 lesson, item 4): re-running init-repo.ps1 against the MCP-2 shape regenerates the SAME unittest hook, not something worse ==='
+# This is the idempotency guarantee the lead specifically needs before
+# re-running init-repo.ps1 across the goncloud repos: a repo that already
+# has the correct unittest hook (matching the real MCP-2 hand-fix) must
+# come out the same way after a re-run, never falling back to no hook or
+# to a naive pytest guess.
+$rMcp2ShapeAgain = Invoke-InitRepo -RepoPath $mcp2ShapeRepo
+Assert-True ($rMcp2ShapeAgain.ExitCode -eq 0) 'second run against the MCP-2 shape also exits 0' "exit=$($rMcp2ShapeAgain.ExitCode)"
+$mcp2ShapeYaml2 = Read-TextFile -Path (Join-Path $mcp2ShapeRepo '.pre-commit-config.yaml')
+Assert-True ($mcp2ShapeYaml2 -eq $mcp2ShapeYaml) 're-running against the MCP-2 shape regenerates byte-identical content -- the same unittest hook, not a regression to no hook or a broken pytest guess' "before=$mcp2ShapeYaml after=$mcp2ShapeYaml2"
+$mcp2MarkerCount = ([regex]::Matches($mcp2ShapeYaml2, [regex]::Escape('QUALITY-KIT MANAGED'))).Count
+Assert-True ($mcp2MarkerCount -eq 1) 'the regenerated MCP-2-shape config still carries exactly one quality-kit marker'
+
 # ------------------------------------------------------------------
 # TEST GROUP 3: cross-review.ps1 -DryRun (never calls a real AI in this suite)
 # ------------------------------------------------------------------

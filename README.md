@@ -50,11 +50,11 @@ Que hace:
   - **Node**: `eslint` y/o `prettier`, pero SOLO si el repo YA tiene su
     propia configuracion de esas herramientas -- nunca se le impone una
     herramienta nueva a un repo que no la usaba.
-  - **Pruebas** (si detecta pytest o un script `test` real en
-    `package.json`): corren en **pre-push**, no en cada commit -- las
-    pruebas (sobre todo un backtest o una suite grande) son demasiado
-    lentas para cada commit chiquito, pero SI tienen que pasar antes de
-    que algo salga del repo hacia afuera.
+  - **Pruebas** (si detecta una carpeta de pruebas de Python, o un script
+    `test` real en `package.json`): corren en **pre-push**, no en cada
+    commit -- las pruebas (sobre todo un backtest o una suite grande) son
+    demasiado lentas para cada commit chiquito, pero SI tienen que pasar
+    antes de que algo salga del repo hacia afuera.
 - Instala los candados de verdad (`pre-commit install`, y
   `pre-commit install --hook-type pre-push` cuando hay pruebas).
 - Si el repo ya tiene remoto de GitHub, copia el workflow de CI
@@ -70,6 +70,31 @@ Que hace:
 Se puede correr mas de una vez sin problema: nunca pisa una configuracion
 de pre-commit que ya tenias de antes (si detecta que `.pre-commit-config.yaml`
 no fue generado por quality-kit, no lo toca y te avisa).
+
+### Como elige el runner de pruebas de Python, y por que verifica antes de instalarlo
+
+Leccion de un incidente real (el deploy de MCP-2): asumir que toda carpeta
+de pruebas de Python usa `pytest` esta mal -- MCP-2 usa `unittest`, y
+ademas `pytest` se rompio en esa maquina con un error interno propio (nada
+que ver con el codigo del repo). Un candado de calidad que se rompe es
+peor que no tener candado: frena cada push por una razon que no tiene nada
+que ver con lo que se esta subiendo. Por eso `init-repo.ps1` ahora:
+
+1. **Elige el runner con esta prioridad**: si hay una config real de
+   pytest (`pytest.ini`, `[tool.pytest.ini_options]`, `[tool:pytest]`),
+   usa pytest. Si no hay config de pytest pero los archivos de la carpeta
+   de pruebas importan `unittest` o heredan de `unittest.TestCase`, usa
+   `unittest` (y si esa carpeta esta anidada, por ejemplo `app\tests` como
+   en MCP-2, arma el comando para entrar primero a esa carpeta). Si no hay
+   config de pytest ni senal de `unittest`, sigue asumiendo pytest (el caso
+   mas comun: pruebas sueltas sin config, que es como pytest funciona por
+   default).
+2. **Verifica ANTES de instalar** (la leccion principal): antes de escribir
+   el candado de pre-push, corre el comando elegido una vez de verdad. Si
+   se cae, tarda demasiado, o el runner no esta -- NO se instala nada. Se
+   imprime una advertencia bien visible explicando que paso y como
+   agregarlo a mano una vez arreglado, en vez de dejar un candado roto que
+   frene pushes sin motivo real.
 
 ## 2. La regla bug -> prueba de regresion
 
