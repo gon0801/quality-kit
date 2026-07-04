@@ -345,7 +345,8 @@ Assert-True ($rBrokenRunner.ExitCode -eq 0) 'init-repo.ps1 still exits 0 overall
 $brokenRunnerYaml = Read-TextFile -Path (Join-Path $brokenRunnerRepo '.pre-commit-config.yaml')
 Assert-True (-not ($brokenRunnerYaml -match 'unittest-pre-push|pytest-pre-push')) 'NO pre-push test hook of any kind was written when the chosen runner failed validation' "config=$brokenRunnerYaml"
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $brokenRunnerRepo '.git\hooks\pre-push'))) 'the real git pre-push hook was NOT installed at all (only pre-commit, since there is no pre-push hook to enable)'
-Assert-True ($rBrokenRunner.Stdout -match 'ADVERTENCIA.*fallo al verificarlo') 'init-repo.ps1 prints a loud, explicit warning that the runner failed validation' "stdout=$($rBrokenRunner.Stdout)"
+Assert-True ($rBrokenRunner.Stdout -match 'ADVERTENCIA.*fallaron al verificarlos') 'init-repo.ps1 prints a loud, explicit warning that the runner(s) failed validation' "stdout=$($rBrokenRunner.Stdout)"
+Assert-True ($rBrokenRunner.Stdout -match [regex]::Escape('unittest (')) 'the warning names which runner(s) were actually tried (item 1: the skip warning must mention what was tried)' "stdout=$($rBrokenRunner.Stdout)"
 $brokenRunnerClaudeMd = Read-TextFile -Path (Join-Path $brokenRunnerRepo 'CLAUDE.md')
 Assert-True ($brokenRunnerClaudeMd -match 'ADVERTENCIA') 'the skipped-hook warning is also recorded in the Calidad section of CLAUDE.md, not just printed to the console'
 
@@ -362,6 +363,51 @@ $mcp2ShapeYaml2 = Read-TextFile -Path (Join-Path $mcp2ShapeRepo '.pre-commit-con
 Assert-True ($mcp2ShapeYaml2 -eq $mcp2ShapeYaml) 're-running against the MCP-2 shape regenerates byte-identical content -- the same unittest hook, not a regression to no hook or a broken pytest guess' "before=$mcp2ShapeYaml after=$mcp2ShapeYaml2"
 $mcp2MarkerCount = ([regex]::Matches($mcp2ShapeYaml2, [regex]::Escape('QUALITY-KIT MANAGED'))).Count
 Assert-True ($mcp2MarkerCount -eq 1) 'the regenerated MCP-2-shape config still carries exactly one quality-kit marker'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2l (lesson 3b, item 1+3a, THE REAL MCP-2 SHAPE): pytest.ini present + broken pytest + unittest tests -> FALLS BACK to unittest, not a skip ==='
+# This is the exact shape that defeated the lesson-3 build live: MCP-2 has
+# BOTH pytest.ini (pythonpath=app, testpaths=app/tests) AND unittest-style
+# tests (its own docs mandate unittest). A conftest.py that raises at
+# import time deterministically reproduces "pytest is broken on this
+# machine" (confirmed live: python -m pytest --collect-only exits 4 with
+# this conftest, standing in for the real Python 3.14 capture-teardown
+# crash) without depending on that machine-specific bug actually
+# reproducing here.
+$mcp2RealRepo = New-FakeGitRepo -Name 'fake-mcp2-real-shape-repo'
+New-Item -ItemType Directory -Path (Join-Path $mcp2RealRepo 'app\tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $mcp2RealRepo 'pytest.ini') -Content "[pytest]`npythonpath = app`ntestpaths = app/tests`n"
+Write-Utf8NoBomFile -Path (Join-Path $mcp2RealRepo 'conftest.py') -Content "raise RuntimeError(`"simulated broken pytest (Python 3.14 capture bug stand-in)`")`n"
+Write-Utf8NoBomFile -Path (Join-Path $mcp2RealRepo 'app\main.py') -Content "def add(a, b):`n    return a + b`n"
+Write-Utf8NoBomFile -Path (Join-Path $mcp2RealRepo 'app\tests\__init__.py') -Content ''
+Write-Utf8NoBomFile -Path (Join-Path $mcp2RealRepo 'app\tests\test_main.py') -Content "import unittest`nfrom main import add`n`nclass TestMain(unittest.TestCase):`n    def test_add(self):`n        self.assertEqual(add(1, 2), 3)`n"
+Push-Location -LiteralPath $mcp2RealRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rMcp2Real = Invoke-InitRepo -RepoPath $mcp2RealRepo
+Assert-True ($rMcp2Real.ExitCode -eq 0) 'init-repo.ps1 exits 0 on the real MCP-2 shape (pytest.ini + broken pytest + unittest tests)' "exit=$($rMcp2Real.ExitCode) stderr=$($rMcp2Real.Stderr)"
+$mcp2RealYaml = Read-TextFile -Path (Join-Path $mcp2RealRepo '.pre-commit-config.yaml')
+Assert-True ($mcp2RealYaml -match 'unittest-pre-push') 'pytest failing validation falls back to unittest -- the REAL fix for the incident (result is the unittest hook, not a skip)' "config=$mcp2RealYaml"
+Assert-True (-not ($mcp2RealYaml -match 'pytest-pre-push')) 'the failed pytest attempt itself never gets written as a hook'
+Assert-True ($rMcp2Real.Stdout -match [regex]::Escape('funciono como alternativa, despues de que fallara')) 'init-repo.ps1 reports that unittest worked as a fallback after pytest failed' "stdout=$($rMcp2Real.Stdout)"
+Assert-True (Test-Path -LiteralPath (Join-Path $mcp2RealRepo '.git\hooks\pre-push')) 'the real git pre-push hook WAS installed (the fallback succeeded, this is not a skip)'
+Assert-True ($rMcp2Real.Stdout -notmatch 'NO se instala el candado de pre-push') 'this is NOT the give-up path -- no "hook not installed" warning should appear when a fallback succeeds'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2m (lesson 3b, item 2+3b, THE INVARIANT THAT GOT VIOLATED): re-running against a working unittest hook (with pytest.ini ALSO present) keeps it unchanged ==='
+# This is the exact regression: the live incident re-ran init-repo.ps1
+# against MCP-2 (which already had a hand-fixed, working unittest hook),
+# fresh detection tried pytest first (per priority), pytest failed
+# (machine-wide broken), and the OLD logic gave up and wrote NO hook at
+# all -- silently deleting the working one. The fix must skip fresh
+# detection entirely here and keep the existing, still-working hook
+# byte-for-byte.
+$rMcp2RealAgain = Invoke-InitRepo -RepoPath $mcp2RealRepo
+Assert-True ($rMcp2RealAgain.ExitCode -eq 0) 'second run against the real MCP-2 shape also exits 0' "exit=$($rMcp2RealAgain.ExitCode)"
+$mcp2RealYaml2 = Read-TextFile -Path (Join-Path $mcp2RealRepo '.pre-commit-config.yaml')
+Assert-True ($mcp2RealYaml2 -eq $mcp2RealYaml) 're-running keeps the unittest hook byte-for-byte identical -- NOT downgraded to a skip just because pytest.ini is also present and pytest still fails' "before=$mcp2RealYaml after=$mcp2RealYaml2"
+Assert-True ($rMcp2RealAgain.Stdout -match [regex]::Escape('todavia funciona -- lo mantengo tal cual')) 'init-repo.ps1 reports explicitly that it kept the existing, still-working hook instead of re-detecting' "stdout=$($rMcp2RealAgain.Stdout)"
+Assert-True ($rMcp2RealAgain.Stdout -notmatch 'Verificando el runner de pruebas \(pytest\)') 'the re-run does NOT even attempt to validate pytest again -- fresh detection is skipped entirely once the existing hook is confirmed working'
+Assert-True (Test-Path -LiteralPath (Join-Path $mcp2RealRepo '.git\hooks\pre-push')) 'the real git pre-push hook is still installed after the second run'
 
 # ------------------------------------------------------------------
 # TEST GROUP 3: cross-review.ps1 -DryRun (never calls a real AI in this suite)

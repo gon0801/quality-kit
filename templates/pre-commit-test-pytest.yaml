@@ -1,15 +1,18 @@
-# Fragmento de pruebas Python -- se agrega SOLO si init-repo.ps1 detecta una
-# config de pytest (pytest.ini, [tool.pytest.ini_options] en pyproject.toml,
-# setup.cfg con seccion [tool:pytest]) o una carpeta tests/. Corre en
-# PRE-PUSH, no en pre-commit: las pruebas (y sobre todo un backtest o una
-# suite grande) son demasiado lentas para correr en cada commit.
-# <PYTHON_EXE> lo reemplaza init-repo.ps1 por el interprete de Python que
-# encontro y verifico en esta maquina.
+# Fragmento de pruebas Python -- se agrega SOLO si init-repo.ps1 elige (y
+# verifica que funcione) pytest como runner. Corre en PRE-PUSH, no en
+# pre-commit: las pruebas (y sobre todo un backtest o una suite grande) son
+# demasiado lentas para correr en cada commit.
+# <PYTEST_ENTRY_CMD> lo arma init-repo.ps1: normalmente "<python> -m pytest
+# -x -q", pero si ya habia un candado de pruebas funcionando de una corrida
+# anterior, se reusa ese comando tal cual (verbatim) en vez de reconstruirlo
+# -- una regeneracion nunca debe reemplazar un candado que ya funciona por
+# otra cosa (ver el propio init-repo.ps1, seccion "nunca degradar un
+# candado que funciona").
   - repo: local
     hooks:
       - id: pytest-pre-push
         name: pytest (pre-push)
-        entry: <PYTHON_EXE> -m pytest -x -q
+        entry: <PYTEST_ENTRY_CMD>
         language: system
         pass_filenames: false
         stages: [pre-push]

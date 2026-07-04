@@ -80,21 +80,42 @@ que ver con el codigo del repo). Un candado de calidad que se rompe es
 peor que no tener candado: frena cada push por una razon que no tiene nada
 que ver con lo que se esta subiendo. Por eso `init-repo.ps1` ahora:
 
-1. **Elige el runner con esta prioridad**: si hay una config real de
-   pytest (`pytest.ini`, `[tool.pytest.ini_options]`, `[tool:pytest]`),
-   usa pytest. Si no hay config de pytest pero los archivos de la carpeta
-   de pruebas importan `unittest` o heredan de `unittest.TestCase`, usa
-   `unittest` (y si esa carpeta esta anidada, por ejemplo `app\tests` como
-   en MCP-2, arma el comando para entrar primero a esa carpeta). Si no hay
-   config de pytest ni senal de `unittest`, sigue asumiendo pytest (el caso
-   mas comun: pruebas sueltas sin config, que es como pytest funciona por
-   default).
-2. **Verifica ANTES de instalar** (la leccion principal): antes de escribir
-   el candado de pre-push, corre el comando elegido una vez de verdad. Si
-   se cae, tarda demasiado, o el runner no esta -- NO se instala nada. Se
-   imprime una advertencia bien visible explicando que paso y como
-   agregarlo a mano una vez arreglado, en vez de dejar un candado roto que
-   frene pushes sin motivo real.
+1. **Elige el runner con esta prioridad, como una cadena de intentos, no
+   una sola apuesta**: si hay una config real de pytest (`pytest.ini`,
+   `[tool.pytest.ini_options]`, `[tool:pytest]`), prueba pytest primero. Si
+   los archivos de la carpeta de pruebas TAMBIEN importan `unittest` o
+   heredan de `unittest.TestCase` (el caso real de MCP-2: tiene pytest.ini
+   Y pruebas escritas para unittest a la vez), `unittest` queda en cola
+   como alternativa por si pytest falla. Si no hay config de pytest pero
+   si esa senal de `unittest`, usa `unittest` directo (y si la carpeta esta
+   anidada, por ejemplo `app\tests` como en MCP-2, arma el comando para
+   entrar primero a esa carpeta). Si no hay ninguna de las dos senales,
+   sigue asumiendo pytest (el caso mas comun: pruebas sueltas sin config).
+2. **Verifica ANTES de instalar, probando cada candidato en orden**: antes
+   de escribir el candado de pre-push, corre el comando elegido una vez de
+   verdad. Si falla, prueba el siguiente candidato de la lista (si hay
+   alguno). Solo si TODOS los candidatos fallan se rinde: no se instala
+   nada, y se imprime una advertencia bien visible nombrando cada runner
+   que se probo y por que fallo, con instrucciones de como agregarlo a
+   mano una vez arreglado.
+3. **Nunca degrada un candado que ya funciona**: si el repo ya tiene un
+   candado de pruebas de una corrida anterior (por ejemplo, el que vos
+   mismo arreglaste a mano), `init-repo.ps1` lo verifica primero, tal cual
+   esta, ANTES de intentar detectar nada de nuevo. Si ese candado
+   existente todavia funciona, se mantiene sin cambios -- nunca se
+   reemplaza un candado que funciona por nada, ni siquiera si una nueva
+   deteccion "en teoria mejor" fallaria. Esto es lo que se rompio en un
+   incidente real: una re-corrida probo pytest primero (por prioridad),
+   pytest fallo (estaba roto en esa maquina), y la version vieja de esta
+   logica se rendia y borraba el candado de unittest que ya funcionaba.
+
+**Nota honesta**: en esta maquina, `pytest` esta roto en general (un error
+interno propio de pytest con esta version de Python, no algo que
+quality-kit pueda arreglar). Un repo con pruebas genuinamente solo de
+pytest (sin senal de `unittest` para caer de alternativa) va a recibir la
+advertencia de "candado no instalado" hasta que se actualice pytest o
+Python en esta maquina -- eso es el comportamiento correcto y esperado
+(fallar seguro), no un bug de quality-kit.
 
 ## 2. La regla bug -> prueba de regresion
 
