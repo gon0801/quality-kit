@@ -7,12 +7,15 @@
 # fragmento no se agrega, se avisa en su lugar). Corre en PRE-PUSH, no en
 # pre-commit, por la misma razon que el fragmento de pytest: las pruebas
 # son demasiado lentas para cada commit.
-# <UNITTEST_ENTRY_CMD> lo arma init-repo.ps1: si el directorio de pruebas
-# esta en la raiz del repo, es un comando directo; si esta anidado (por
-# ejemplo app\tests, como en el caso real de MCP-2), es un "bash -c 'cd
-# app && ...'" para poder cambiar de directorio antes de correr las
-# pruebas (los hooks locales de pre-commit no tienen una clave de
-# directorio de trabajo propia).
+# El comando de la linea "entry:" de aca abajo lo arma init-repo.ps1: si el
+# directorio de pruebas esta en la raiz del repo, es un comando directo; si
+# esta anidado (por ejemplo app\tests, como en el caso real de MCP-2), es
+# un "bash -c 'cd app && ...'" para poder cambiar de directorio antes de
+# correr las pruebas (los hooks locales de pre-commit no tienen una clave
+# de directorio de trabajo propia). NOTA: no se nombra el token de
+# reemplazo en este comentario a proposito -- ver la nota equivalente en
+# pre-commit-test-pytest.yaml sobre por que una sustitucion ingenua puede
+# corromper este texto si el token aparece dos veces en el archivo.
   - repo: local
     hooks:
       - id: unittest-pre-push

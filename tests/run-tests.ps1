@@ -110,9 +110,51 @@ function Invoke-ScriptCapture {
     return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
 }
 
+# Same as Invoke-ScriptCapture, but strips bash.exe's own directories from
+# the CHILD process's PATH before starting it -- while leaving git.exe's
+# directory alone -- to deterministically reproduce the exact real machine
+# where "Get-Command bash" finds nothing from PowerShell (confirmed live:
+# this is a real, reported condition on at least one machine, even though
+# bash works fine there for actual git hooks, which run under Git Bash's
+# own environment instead). ProcessStartInfo.EnvironmentVariables is
+# lazily populated from the CURRENT process's real environment the first
+# time it is touched, so reading it here before assigning gives the real
+# PATH to filter, not an empty one.
+function Invoke-ScriptCaptureWithoutBashOnPath {
+    param([string]$ScriptPath, [string[]]$ScriptArgs = @())
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $ScriptArgs
+    $quotedParts = @()
+    foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
+    $psi.Arguments = ($quotedParts -join ' ')
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $currentPath = $psi.EnvironmentVariables['Path']
+    $filteredParts = @($currentPath -split ';' | Where-Object {
+        ($_ -notlike '*usr\bin*') -and ($_ -notlike '*mingw64\bin*') -and ($_ -notlike '*usr\local\bin*')
+    })
+    $psi.EnvironmentVariables['Path'] = ($filteredParts -join ';')
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.Start() | Out-Null
+    $proc.StandardInput.Close()
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $stderr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+}
+
 function Invoke-InitRepo {
     param([string]$RepoPath)
     return Invoke-ScriptCapture -ScriptPath $InitRepoScript -ScriptArgs @('-RepoPath', $RepoPath)
+}
+
+function Invoke-InitRepoWithoutBashOnPath {
+    param([string]$RepoPath)
+    return Invoke-ScriptCaptureWithoutBashOnPath -ScriptPath $InitRepoScript -ScriptArgs @('-RepoPath', $RepoPath)
 }
 
 function Invoke-CrossReviewDryRun {
@@ -408,6 +450,61 @@ Assert-True ($mcp2RealYaml2 -eq $mcp2RealYaml) 're-running keeps the unittest ho
 Assert-True ($rMcp2RealAgain.Stdout -match [regex]::Escape('todavia funciona -- lo mantengo tal cual')) 'init-repo.ps1 reports explicitly that it kept the existing, still-working hook instead of re-detecting' "stdout=$($rMcp2RealAgain.Stdout)"
 Assert-True ($rMcp2RealAgain.Stdout -notmatch 'Verificando el runner de pruebas \(pytest\)') 'the re-run does NOT even attempt to validate pytest again -- fresh detection is skipped entirely once the existing hook is confirmed working'
 Assert-True (Test-Path -LiteralPath (Join-Path $mcp2RealRepo '.git\hooks\pre-push')) 'the real git pre-push hook is still installed after the second run'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2n (lesson 3c, item 1+3a, SECOND real incident): bash not visible to Get-Command, but present at Gits install path -> existing bash -c hook still validates and is kept ==='
+# The MCP-2 fix from lesson 3b got re-broken by a DIFFERENT real problem:
+# validating the existing "bash -c '...'" hook spawned a bare 'bash',
+# which threw immediately on a machine where PowerShell's own PATH
+# resolution cannot see it -- even though the exact same command works
+# fine as a real git hook (Git Bash has its own environment). Reusing the
+# real MCP-2-shaped repo from TEST GROUP 2l/2m (it already has a working
+# unittest hook with a bash -c entry): running init-repo.ps1 in a CHILD
+# process whose PATH has had bash.exe's own directories stripped (but NOT
+# git.exe's) must still find bash via the fixed Git install-path fallback
+# and keep the hook -- not silently degrade it a second time.
+$rMcp2NoBashOnPath = Invoke-InitRepoWithoutBashOnPath -RepoPath $mcp2RealRepo
+Assert-True ($rMcp2NoBashOnPath.ExitCode -eq 0) 'init-repo.ps1 exits 0 even when bash is not visible to Get-Command in the child process' "exit=$($rMcp2NoBashOnPath.ExitCode) stderr=$($rMcp2NoBashOnPath.Stderr)"
+$mcp2RealYaml3 = Read-TextFile -Path (Join-Path $mcp2RealRepo '.pre-commit-config.yaml')
+Assert-True ($mcp2RealYaml3 -eq $mcp2RealYaml) 'the existing unittest hook (with its bash -c entry) is preserved byte-for-byte even though Get-Command cannot see bash in this child process' "before=$mcp2RealYaml after=$mcp2RealYaml3"
+Assert-True ($rMcp2NoBashOnPath.Stdout -match [regex]::Escape('todavia funciona -- lo mantengo tal cual')) 'init-repo.ps1 reports the hook still works -- it found bash via the Git install-path fallback, not the "could not verify" path' "stdout=$($rMcp2NoBashOnPath.Stdout)"
+Assert-True ($rMcp2NoBashOnPath.Stdout -notmatch 'No se pudo verificar') 'this is the SUCCESS path (bash was found via fallback), not the validator-error path -- that is a separate scenario tested next'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 2o (lesson 3c, item 2+3b, THE SHARPENED INVARIANT): a validator SPAWN failure on the existing hook keeps it untouched, with a distinct message ==='
+# Different failure shape than 2n: here the validator itself cannot even
+# launch the check (confirmed live: "Exception calling Start... The system
+# cannot find the file specified" for a bogus path) -- this must be
+# treated as OUR infrastructure problem, never as proof the hook is
+# broken, so the existing hook must be kept exactly as configured.
+#
+# Built realistically in two steps, not hand-crafted from scratch: first a
+# real run produces a real, generator-authentic pytest-pre-push config
+# (same shape Build-PreCommitConfigContent always produces); THEN only the
+# entry line is doctored to point at a path that cannot exist, simulating
+# "this worked before, something external made the exe unreachable" while
+# keeping everything else byte-for-byte generator-authentic -- so a
+# "kept verbatim" assertion is actually meaningful, instead of comparing
+# against a hand-written file the generator would never itself produce.
+$spawnFailRepo = New-FakeGitRepo -Name 'fake-spawnfail-repo'
+Write-Utf8NoBomFile -Path (Join-Path $spawnFailRepo 'pyproject.toml') -Content "[project]`nname = ""x""`n"
+Write-Utf8NoBomFile -Path (Join-Path $spawnFailRepo 'pytest.ini') -Content "[pytest]`n"
+New-Item -ItemType Directory -Path (Join-Path $spawnFailRepo 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $spawnFailRepo 'tests\test_x.py') -Content "def test_ok():`n    assert 1 + 1 == 2`n"
+Push-Location -LiteralPath $spawnFailRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rSpawnFailSetup = Invoke-InitRepo -RepoPath $spawnFailRepo
+Assert-True ($rSpawnFailSetup.ExitCode -eq 0) 'sanity: the setup run that creates a real pytest-pre-push hook exits 0' "exit=$($rSpawnFailSetup.ExitCode)"
+$spawnFailConfigReal = Read-TextFile -Path (Join-Path $spawnFailRepo '.pre-commit-config.yaml')
+Assert-True ($spawnFailConfigReal -match 'pytest-pre-push') 'sanity: the setup run produced a real pytest-pre-push hook to doctor'
+$spawnFailConfigDoctored = [regex]::Replace($spawnFailConfigReal, '(?m)^(\s*entry:\s*).+$', '${1}C:\this\path\does\not\exist\fake-python.exe -m pytest -x -q')
+Write-Utf8NoBomFile -Path (Join-Path $spawnFailRepo '.pre-commit-config.yaml') -Content $spawnFailConfigDoctored
+$rSpawnFail = Invoke-InitRepo -RepoPath $spawnFailRepo
+Assert-True ($rSpawnFail.ExitCode -eq 0) 'init-repo.ps1 exits 0 even when the existing hook''s validator hits a spawn exception' "exit=$($rSpawnFail.ExitCode) stderr=$($rSpawnFail.Stderr)"
+$spawnFailConfigAfter = Read-TextFile -Path (Join-Path $spawnFailRepo '.pre-commit-config.yaml')
+Assert-True ($spawnFailConfigAfter -eq $spawnFailConfigDoctored) 'the doctored entry (pointing at an unreachable exe) is kept byte-for-byte -- a validator spawn failure must NEVER be treated as proof the hook is broken' "before=$spawnFailConfigDoctored after=$spawnFailConfigAfter"
+Assert-True ($rSpawnFail.Stdout -match 'No se pudo verificar') 'the message explicitly says the hook could NOT be verified (validator error), distinct from "ya NO funciona" (the command itself failing)' "stdout=$($rSpawnFail.Stdout)"
+Assert-True ($rSpawnFail.Stdout -notmatch 'ya NO funciona') 'this must NOT be reported as the command itself failing -- it is a validator/infrastructure problem'
 
 # ------------------------------------------------------------------
 # TEST GROUP 3: cross-review.ps1 -DryRun (never calls a real AI in this suite)

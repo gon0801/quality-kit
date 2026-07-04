@@ -80,6 +80,30 @@ function Get-PythonExe {
     return $null
 }
 
+# Resolves a real, invocable path to bash the same way Git itself finds it
+# -- NOT a bare 'bash' string. Real incident: on at least one machine,
+# PowerShell's own process-launch mechanism cannot see bash on PATH at all
+# (Get-Command bash finds nothing there), even though bash works perfectly
+# fine for real git hooks (which run under Git Bash's own environment, not
+# PowerShell's). Spawning a bare "bash" from PowerShell on a machine like
+# that throws immediately -- and that is an INFRASTRUCTURE problem with how
+# this validator looks for bash, not evidence that the hook itself (or bash
+# itself) is broken. Tried in order: whatever PATH already resolves (works
+# on machines where it is visible to PowerShell), then the two fixed
+# locations Git for Windows itself installs bash.exe at.
+function Get-BashExe {
+    $viaPath = Get-Command bash -ErrorAction SilentlyContinue
+    if ($null -ne $viaPath) { return $viaPath.Source }
+    $fixedCandidates = @(
+        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+        (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+    )
+    foreach ($c in $fixedCandidates) {
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    return $null
+}
+
 # Prefer a repo-local virtualenv's Python (it has the repo's real
 # dependencies installed, so pytest actually finds what it needs), falling
 # back to whatever generic Python this machine has.
@@ -179,7 +203,14 @@ function Invoke-CommandWithTimeout {
     try {
         $proc.Start() | Out-Null
     } catch {
-        return [PSCustomObject]@{ TimedOut = $false; ExitCode = -1; Stdout = ''; Stderr = "No se pudo iniciar '$Exe': $_" }
+        # SpawnFailed = $true is the key distinction lesson 3c adds: this
+        # means OUR OWN validator could not even launch the process (wrong
+        # path, exe missing, permissions) -- an infrastructure problem with
+        # the check itself, NOT proof that the command/hook it was trying
+        # to run is broken. Every other outcome below (ran and returned
+        # non-zero, or timed out) means the process DID start, so
+        # SpawnFailed stays $false there.
+        return [PSCustomObject]@{ TimedOut = $false; SpawnFailed = $true; ExitCode = -1; Stdout = ''; Stderr = "No se pudo iniciar '$Exe': $_" }
     }
     $proc.StandardInput.Close()
     $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
@@ -190,13 +221,13 @@ function Invoke-CommandWithTimeout {
             # Best-effort: if the process already exited between the
             # WaitForExit timeout and this Kill call, that is fine too.
         }
-        return [PSCustomObject]@{ TimedOut = $true; ExitCode = -1; Stdout = ''; Stderr = '' }
+        return [PSCustomObject]@{ TimedOut = $true; SpawnFailed = $false; ExitCode = -1; Stdout = ''; Stderr = '' }
     }
     $stdout = ''
     $stderr = ''
     try { $stdout = $stdoutTask.Result } catch {}
     try { $stderr = $stderrTask.Result } catch {}
-    return [PSCustomObject]@{ TimedOut = $false; ExitCode = $proc.ExitCode; Stdout = $stdout; Stderr = $stderr }
+    return [PSCustomObject]@{ TimedOut = $false; SpawnFailed = $false; ExitCode = $proc.ExitCode; Stdout = $stdout; Stderr = $stderr }
 }
 
 function Get-ValidationFailureDetail {
@@ -498,8 +529,19 @@ function Invoke-ExistingEntryCommand {
     param([string]$Entry, [string]$RepoPath, [int]$TimeoutSeconds = 60)
     $bashMatch = [regex]::Match($Entry, "^bash -c '(.*)'$")
     if ($bashMatch.Success) {
+        # Real incident (lesson 3c): spawning a bare "bash" from PowerShell
+        # threw immediately on a machine where PowerShell's own PATH
+        # resolution cannot see it, even though the exact same command
+        # works fine as a real git hook (which runs under Git Bash's own
+        # environment). Resolving the real path first, the same way Git
+        # itself would find bash, fixes this without changing what
+        # actually gets run.
         $inner = $bashMatch.Groups[1].Value
-        return Invoke-CommandWithTimeout -Exe 'bash' -Arguments ('-c "' + $inner + '"') -WorkingDirectory $RepoPath -TimeoutSeconds $TimeoutSeconds
+        $bashExe = Get-BashExe
+        if ($null -eq $bashExe) {
+            return [PSCustomObject]@{ TimedOut = $false; SpawnFailed = $true; ExitCode = -1; Stdout = ''; Stderr = 'No se encontro bash.exe en esta maquina (ni en PATH ni en las rutas de instalacion de Git).' }
+        }
+        return Invoke-CommandWithTimeout -Exe $bashExe -Arguments ('-c "' + $inner + '"') -WorkingDirectory $RepoPath -TimeoutSeconds $TimeoutSeconds
     }
     $splitIdx = $Entry.IndexOf(' ')
     if ($splitIdx -lt 0) {
@@ -528,6 +570,17 @@ function Test-ExistingPythonHookStillValidates {
     }
     Write-Host "==> Ya habia un candado de pruebas de Python ($($existingHook.Type)) de una corrida anterior -- lo verifico antes de decidir si hace falta volver a detectar el runner..."
     $result = Invoke-ExistingEntryCommand -Entry $existingHook.Entry -RepoPath $RepoPath -TimeoutSeconds 60
+    if ($result.SpawnFailed) {
+        # THE SHARPENED INVARIANT (lesson 3c): a real incident showed this
+        # distinction matters. The validator itself failed to even launch
+        # the check (here: bash was not resolvable from PowerShell on that
+        # machine) -- that is OUR infrastructure problem, not proof the
+        # hook is broken (the real git hook ran that exact command fine,
+        # under Git Bash's own environment). Since we cannot prove it is
+        # broken, we must not degrade it: keep it exactly as it is.
+        Write-Host "==> No se pudo verificar el candado existente ($($existingHook.Type)) por un problema de esta maquina, no del candado en si ($($result.Stderr)) -- lo mantengo tal cual sin tocarlo (no se puede probar que este roto, asi que no se degrada)."
+        return $existingHook
+    }
     if ($result.TimedOut -or $result.ExitCode -ne 0) {
         Write-Host "==> El candado de pruebas existente ($($existingHook.Type)) ya NO funciona ($(Get-ValidationFailureDetail $result)) -- vuelvo a detectar desde cero."
         return $null
@@ -573,6 +626,23 @@ function Test-IsGitRepo {
 # .pre-commit-config.yaml assembly
 # ------------------------------------------------------------------
 
+# Substitutes a placeholder ONLY where it appears as the value of an
+# "entry:" line -- NOT anywhere else the same token might appear (a real
+# bug found while testing this: both test-runner templates also mention
+# their own placeholder inside their explanatory comments, so a naive
+# whole-text .Replace() corrupted that prose with the actual command text
+# whenever the entry value differed from what the comment happened to
+# already say). Uses a MatchEvaluator (not a plain replacement string) so
+# a "$" that might appear inside the real entry command (unlikely here,
+# but not impossible in an arbitrary path) is never misread as a regex
+# backreference.
+function Set-TemplateEntryPlaceholder {
+    param([string]$TemplateText, [string]$Placeholder, [string]$ReplacementValue)
+    $pattern = '(?m)^(\s*entry:\s*)' + [regex]::Escape($Placeholder) + '\s*$'
+    $evaluator = [System.Text.RegularExpressions.MatchEvaluator] { param($m) $m.Groups[1].Value + $ReplacementValue }
+    return [regex]::Replace($TemplateText, $pattern, $evaluator)
+}
+
 function Build-PreCommitConfigContent {
     param([string]$RepoPath, [hashtable]$Detected)
     $content = Read-TextFile -Path (Join-Path $TemplatesDir 'pre-commit-generic.yaml')
@@ -597,13 +667,13 @@ function Build-PreCommitConfigContent {
         # see Test-ExistingPythonHookStillValidates below for why that
         # matters (never downgrade a working gate to nothing on a re-run).
         $pytestFragment = Read-TextFile -Path (Join-Path $TemplatesDir 'pre-commit-test-pytest.yaml')
-        $pytestFragment = $pytestFragment.Replace('<PYTEST_ENTRY_CMD>', $Detected.PytestEntryCmd)
+        $pytestFragment = Set-TemplateEntryPlaceholder -TemplateText $pytestFragment -Placeholder '<PYTEST_ENTRY_CMD>' -ReplacementValue $Detected.PytestEntryCmd
         $content += $pytestFragment
         $components.Add('pytest -x -q (pre-push)')
     }
     if ($Detected.PythonTestRunner -eq 'unittest') {
         $unittestFragment = Read-TextFile -Path (Join-Path $TemplatesDir 'pre-commit-test-unittest.yaml')
-        $unittestFragment = $unittestFragment.Replace('<UNITTEST_ENTRY_CMD>', $Detected.UnittestEntryCmd)
+        $unittestFragment = Set-TemplateEntryPlaceholder -TemplateText $unittestFragment -Placeholder '<UNITTEST_ENTRY_CMD>' -ReplacementValue $Detected.UnittestEntryCmd
         $content += $unittestFragment
         $components.Add('unittest discover (pre-push)')
     }
