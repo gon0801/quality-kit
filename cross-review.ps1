@@ -16,6 +16,13 @@
 # 'glm'-launched session, Bedrock/Vertex toggles) cannot steer the review
 # away from the real Claude account (OAuth + the plan's default model);
 # this does not defend against a fake 'claude' binary planted on PATH.
+# -TimeoutSec (default 300): hard per-candidate cap -- a hung CLI gets
+# killed (exit 124 in single mode) and the auto chain moves on to the next
+# candidate. Added after a real hang: without it, this script (and the
+# harness that called it) waited forever on a stuck claude. For the same
+# reason claude receives the diff INLINE via stdin (no file reads, no
+# permission/trust surface to hang on); kimi/codex keep the temp-file path.
+#
 # Exit 3 -- ONLY in auto mode -- means no external reviewer in the chain
 # could deliver a review (caller falls back to its own internal reviewer
 # and must say so). In single mode the CLI's own exit code is passed
@@ -60,6 +67,14 @@ param(
     [string]$Alcance = '',
 
     [string]$RepoPath = (Get-Location).Path,
+
+    # Tope por candidato. Caso real (2026-07-05): claude se quedo colgado
+    # y, sin timeout, este script esperaba PARA SIEMPRE -- desde el harness
+    # que lo llamo se veia como cuelgue total y la cadena nunca llegaba al
+    # siguiente candidato. 0 = sin tope (no recomendado). Nota honesta: el
+    # tope efectivo puede excederse ~35 s (30 s del write de stdin + 5 s de
+    # drenado post-kill); es un tope practico, no un deadline exacto.
+    [int]$TimeoutSec = 300,
 
     [switch]$DryRun
 )
@@ -144,6 +159,16 @@ function Build-ReviewPrompt {
     return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. Lee el archivo '$DiffFilePath' (contiene un diff de git: $Label, del repositorio '$RepoName') y revisalo. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
 }
 
+# Variante para claude: el diff viaja INLINE por stdin en vez de pedirle leer
+# un archivo. Motivo (caso real 2026-07-05): pedir una lectura de archivo abre
+# la superficie de permisos/confianza de Claude Code, que en modo headless no
+# tiene quien la conteste -- candidato #1 del cuelgue observado. Con el diff
+# en stdin la revision no necesita NINGUNA herramienta.
+function Build-ReviewPromptInline {
+    param([string]$Label, [string]$RepoName)
+    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. A continuacion de estas instrucciones viene un diff de git ($Label, del repositorio '$RepoName'). Revisalo SIN usar ninguna herramienta: todo lo que necesitas ya esta en este mensaje. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
+}
+
 function ConvertTo-WindowsCliArg {
     param([string]$Value)
     # Simple, sufficient quoting for this script's own prompts (they never
@@ -218,7 +243,7 @@ function Get-CliInvocation {
 }
 
 function Invoke-CliHeadless {
-    param([string]$Exe, [string]$Arguments, [string]$WorkingDirectory, [string[]]$StripEnvPrefixes = @())
+    param([string]$Exe, [string]$Arguments, [string]$WorkingDirectory, [string[]]$StripEnvPrefixes = @(), [string]$StdinText = '', [int]$TimeoutSec = 0)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.Arguments = $Arguments
@@ -243,21 +268,71 @@ function Invoke-CliHeadless {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
-    # Close stdin immediately without writing: some of these CLIs (codex
-    # confirmed live) also peek at stdin even when a prompt argument is
-    # given, appending whatever they find as extra context. An
-    # unredirected/open stdin inherited from an interactive parent shell
-    # would make them block waiting for input that never arrives; closing
-    # it right away signals EOF immediately instead.
-    $proc.StandardInput.Close()
-    # Leer stderr en paralelo (async) mientras se lee stdout: leer los dos
-    # secuencialmente puede deadlockear si el hijo llena el buffer del que
-    # no se esta leyendo (codex escribe su progreso a stderr, confirmado).
+    # Escribir el StdinText (si lo hay) y cerrar stdin de inmediato: algunos
+    # de estos CLIs (codex confirmado en vivo) tambien leen stdin aunque
+    # reciban prompt por argumento; un stdin abierto heredado de un shell
+    # interactivo los deja esperando entrada que nunca llega -- cerrarlo
+    # senala EOF al instante.
+    # Las lecturas async arrancan ANTES de escribir stdin: un write sincrono
+    # contra un hijo que no drena stdin llenaria el buffer del pipe (4-64KB,
+    # menos que un diff capeado) y bloquearia Write() para siempre ANTES de
+    # llegar al WaitForExit con tope -- reintroduciendo exactamente el
+    # cuelgue que el timeout elimina. Tambien evita el deadlock clasico de
+    # leer stdout/stderr en serie (codex escribe su progreso a stderr).
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
     $stderrTask = $proc.StandardError.ReadToEndAsync()
-    $stdout = $proc.StandardOutput.ReadToEnd()
+    if ($StdinText) {
+        # Bytes UTF-8 explicitos via BaseStream: PS 5.1 no tiene
+        # ProcessStartInfo.StandardInputEncoding y el StreamWriter default
+        # usa la codepage OEM de consola -- un diff con acentos/enie
+        # llegaria corrupto y el revisor revisaria codigo distinto del real.
+        $stdinBytes = [System.Text.Encoding]::UTF8.GetBytes($StdinText)
+        $stdinTask = $null
+        try { $stdinTask = $proc.StandardInput.BaseStream.WriteAsync($stdinBytes, 0, $stdinBytes.Length) } catch { }
+        $stdinWriteOk = $false
+        if ($null -ne $stdinTask) {
+            try { $stdinWriteOk = $stdinTask.Wait(30000) } catch { }
+        }
+        # EOF (Close) si el write termino, o si fallo (pipe roto = el hijo ya
+        # murio; su stderr diagnostico se conserva). Si el write sigue
+        # ATORADO (hijo no drena), NO cerrar: Close bloquearia en el flush --
+        # el timeout + kill de abajo se encarga de ese proceso.
+        if ($stdinWriteOk -or ($null -eq $stdinTask) -or $stdinTask.IsFaulted -or $stdinTask.IsCanceled) {
+            try { $proc.StandardInput.Close() } catch { }
+        }
+    } else {
+        try { $proc.StandardInput.Close() } catch { }
+    }
+    if ($TimeoutSec -gt 0) {
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            # Caso real (2026-07-05): claude colgado dejaba a este script (y
+            # al harness que lo llamo) esperando para siempre. Matar y
+            # reportar TimedOut deja que la cadena siga al siguiente.
+            # taskkill /T mata el ARBOL completo: un CLI lanzado via shim
+            # .cmd (cmd.exe -> node, el caso codex) quedaria huerfano y
+            # consumiendo cuota si solo se matara el proceso directo
+            # (Process.Kill() de PS 5.1 no tiene la variante de arbol).
+            try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+            # WaitAll lanza AggregateException si una task quedo Faulted (y
+            # .Result tambien) -- capturar solo lo que SI termino bien, para
+            # conservar el diagnostico parcial sin reventar con error crudo.
+            try { [void][System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 5000) } catch { }
+            $partialOut = ''
+            $partialErr = ''
+            if ($stdoutTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $partialOut = $stdoutTask.Result }
+            if ($stderrTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $partialErr = $stderrTask.Result }
+            return [PSCustomObject]@{ Stdout = $partialOut; Stderr = $partialErr; ExitCode = 124; TimedOut = $true }
+        }
+        # WaitForExit(ms) puede regresar antes de que el output async
+        # termine de vaciarse; el WaitForExit() sin argumento lo garantiza.
+        $proc.WaitForExit()
+    } else {
+        $proc.WaitForExit()
+    }
+    $stdout = $stdoutTask.Result
     $stderr = $stderrTask.Result
-    $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode; TimedOut = $false }
 }
 
 # ------------------------------------------------------------------
@@ -327,13 +402,22 @@ try {
             throw "No encontre '$candidate' en el PATH de esta maquina. Confirma que la CLI esta instalada y accesible."
         }
 
+        # claude: diff inline por stdin + prompt sin lecturas de archivo (ver
+        # Build-ReviewPromptInline); kimi/codex siguen leyendo el temp file.
+        $candidatePrompt = $prompt
+        $candidateStdin = ''
+        if ($candidate -eq 'claude') {
+            $candidatePrompt = Build-ReviewPromptInline -Label $diffResult.Label -RepoName $repoName
+            $candidateStdin = "=== DIFF ===`n" + $cappedDiff
+        }
+
         # Fail-open POR CANDIDATO en modo auto: si armar o lanzar la
         # invocacion truena (exe corrupto, shim raro, etc.), eso no debe
         # abortar la cadena entera con exit 1 -- se anota y se prueba el
         # siguiente. En modo single se conserva el error claro de siempre.
         $invocation = $null
         try {
-            $invocation = Get-CliInvocation -Con $candidate -Prompt $prompt
+            $invocation = Get-CliInvocation -Con $candidate -Prompt $candidatePrompt
         } catch {
             if ($Con -eq 'auto') {
                 Write-Host "==> ADVERTENCIA: no pude preparar la invocacion de $candidate ($($_.Exception.Message)). Sigo con el siguiente de la cadena."
@@ -353,25 +437,53 @@ try {
             if ($stripPrefixes.Count -gt 0) {
                 Write-Host "Nota: se invocaria con las variables de entorno $($stripPrefixes -join '* y ')* limpias (el comando de abajo no puede mostrarlo)."
             }
+            if ($candidateStdin) {
+                Write-Host "Nota: a $candidate el diff se le entrega inline por stdin (sin lecturas de archivo, sin superficie de permisos que pueda colgarse); el archivo temporal de abajo se genera igual para inspeccion, pero $candidate NO lo lee."
+            }
             Write-Host "Comando: $($invocation.Exe) $($invocation.Arguments)"
             Write-Host ''
             Write-Host '=== Prompt ==='
-            Write-Host $prompt
+            Write-Host $candidatePrompt
             Write-Host ''
             Write-Host "=== Archivo de diff (temporal): $tempDiffPath ==="
             exit 0
         }
 
-        Write-Host "==> Invocando $candidate de forma no interactiva..."
+        Write-Host "==> Invocando $candidate de forma no interactiva (tope: $(if ($TimeoutSec -gt 0) { "$TimeoutSec s" } else { 'sin tope' }))..."
         $result = $null
         try {
-            $result = Invoke-CliHeadless -Exe $invocation.Exe -Arguments $invocation.Arguments -WorkingDirectory $RepoPath -StripEnvPrefixes $stripPrefixes
+            $result = Invoke-CliHeadless -Exe $invocation.Exe -Arguments $invocation.Arguments -WorkingDirectory $RepoPath -StripEnvPrefixes $stripPrefixes -StdinText $candidateStdin -TimeoutSec $TimeoutSec
         } catch {
             if ($Con -eq 'auto') {
                 Write-Host "==> ADVERTENCIA: fallo al invocar $candidate ($($_.Exception.Message)). Sigo con el siguiente de la cadena."
                 continue
             }
             throw
+        }
+
+        if ($result.TimedOut) {
+            $chainExitCode = 124
+            Write-Host ''
+            if (-not [string]::IsNullOrWhiteSpace($result.Stderr)) {
+                # Unica evidencia diagnostica de POR QUE se colgo -- sin
+                # esto, el proximo cuelgue se depura a ciegas.
+                $errPreview = $result.Stderr
+                if ($errPreview.Length -gt 800) { $errPreview = $errPreview.Substring(0, 800) + '...' }
+                Write-Host "--- stderr parcial de $candidate antes del kill ---"
+                Write-Host $errPreview
+            }
+            if (-not [string]::IsNullOrWhiteSpace($result.Stdout)) {
+                $outPreview = $result.Stdout
+                if ($outPreview.Length -gt 800) { $outPreview = $outPreview.Substring(0, 800) + '...' }
+                Write-Host "--- stdout parcial de $candidate antes del kill ---"
+                Write-Host $outPreview
+            }
+            if ($Con -eq 'auto') {
+                Write-Host "==> ADVERTENCIA: $candidate se colgo mas de $TimeoutSec segundos; proceso (y su arbol) terminado. Sigo con el siguiente de la cadena."
+            } else {
+                Write-Host "==> ADVERTENCIA: $candidate se colgo mas de $TimeoutSec segundos; proceso (y su arbol) terminado (exit 124). Sube el tope con -TimeoutSec si la revision es legitimamente larga."
+            }
+            continue
         }
 
         Write-Host ''
@@ -407,7 +519,10 @@ try {
         # El exit 3 como sentinel de "sin revisor externo" aplica SOLO al
         # modo auto. En modo single el exit code del CLI se propaga tal
         # cual (y un CLI tambien podria salir con 3 por sus propias
-        # razones) -- no leerlo como sentinel fuera de auto.
+        # razones) -- no leerlo como sentinel fuera de auto. Ojo: aunque el
+        # ultimo candidato haya muerto por timeout (124), en auto la salida
+        # al agotar la cadena SIEMPRE es 3 -- el contrato del caller no se
+        # rompe por el tipo de falla del ultimo intento.
         Write-Host ''
         Write-Host '==> NINGUN revisor externo de la cadena pudo revisar (exit 3). Quien pidio esta revision debe caer a su propio revisor interno y decirlo en su reporte.'
         exit 3
