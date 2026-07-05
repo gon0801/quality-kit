@@ -158,10 +158,50 @@ function Invoke-InitRepoWithoutBashOnPath {
 }
 
 function Invoke-CrossReviewDryRun {
-    param([string]$RepoPath, [string]$Con, [string]$Alcance = '')
+    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '')
     $scriptArgs = @('-Con', $Con, '-RepoPath', $RepoPath, '-DryRun')
     if ($Alcance -ne '') { $scriptArgs += @('-Alcance', $Alcance) }
+    if ($Excluir -ne '') { $scriptArgs += @('-Excluir', $Excluir) }
     return Invoke-ScriptCapture -ScriptPath $CrossReviewScript -ScriptArgs $scriptArgs
+}
+
+# Runs cross-review.ps1 -Con auto with every AI CLI's directory stripped
+# from the CHILD's PATH (git and everything else stay), to exercise the
+# "no external reviewer available" contract (exit 3) deterministically.
+# Safe without -DryRun: with no CLI findable, the chain never invokes
+# anything, so no quota is ever spent.
+function Invoke-CrossReviewAutoWithoutAiClisOnPath {
+    param([string]$RepoPath)
+    $aiDirs = @()
+    foreach ($cli in @('claude', 'kimi', 'codex')) {
+        foreach ($cmd in @(Get-Command -Name $cli -All -ErrorAction SilentlyContinue)) {
+            $aiDirs += (Split-Path -Parent $cmd.Source).TrimEnd('\')
+        }
+    }
+    $aiDirs = @($aiDirs | Sort-Object -Unique)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $CrossReviewScript, '-Con', 'auto', '-RepoPath', $RepoPath)
+    $quotedParts = @()
+    foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
+    $psi.Arguments = ($quotedParts -join ' ')
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $currentPath = $psi.EnvironmentVariables['Path']
+    $filteredParts = @($currentPath -split ';' | Where-Object {
+        $aiDirs -notcontains $_.TrimEnd('\')
+    })
+    $psi.EnvironmentVariables['Path'] = ($filteredParts -join ';')
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.Start() | Out-Null
+    $proc.StandardInput.Close()
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $stderr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
 }
 
 # ------------------------------------------------------------------
@@ -657,6 +697,44 @@ try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('com
 $rEmpty = Invoke-CrossReviewDryRun -RepoPath $emptyDiffRepo -Con 'kimi'
 Assert-True ($rEmpty.ExitCode -eq 0) 'cross-review.ps1 exits 0 cleanly when there is nothing to review' "exit=$($rEmpty.ExitCode)"
 Assert-True ($rEmpty.Stdout -match 'No hay diferencias') 'cross-review.ps1 says plainly there is nothing to review, instead of calling the AI on an empty diff'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3e: cross-review.ps1 -Con auto (chain, -Excluir, self-review guard) ==='
+# Earlier groups may have left $pyRepo fully committed (empty diff), and an
+# empty diff makes cross-review exit early without exercising the chain --
+# so guarantee a fresh working-tree change first.
+Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`ndef mul(a, b):`n    return a * b`n"
+# auto mode, excluding the AI that wrote the change: the chain must show
+# only the remaining candidates, pick the first available one, and still
+# produce the normal DRY RUN shape (command + prompt + temp diff file).
+$rAuto = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto' -Excluir 'kimi'
+Assert-True ($rAuto.ExitCode -eq 0) '-Con auto -DryRun exits 0' "exit=$($rAuto.ExitCode) stderr=$($rAuto.Stderr)"
+Assert-True ($rAuto.Stdout -match [regex]::Escape('Cadena auto: claude -> codex')) '-Con auto -Excluir kimi announces the chain without the excluded AI'
+# Only the candidate list BEFORE the '(' matters: the parenthetical
+# "(excluido: kimi, ...)" legitimately names the excluded AI.
+Assert-True ($rAuto.Stdout -notmatch 'Cadena auto:[^(\r\n]*kimi') '-Con auto -Excluir kimi never lists kimi as a candidate'
+Assert-True ($rAuto.Stdout -match 'Candidato elegido') '-Con auto -DryRun names the candidate that would run'
+Assert-True ($rAuto.Stdout -match [regex]::Escape('Comando:')) '-Con auto -DryRun still shows the exact command that would run'
+Assert-True ($rAuto.Stdout -match 'DRY RUN') '-Con auto -DryRun still announces DRY RUN (no real AI called)'
+
+# auto with no exclusion: full chain, strongest first.
+$rAutoFull = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto'
+Assert-True ($rAutoFull.ExitCode -eq 0) '-Con auto (sin -Excluir) -DryRun exits 0' "exit=$($rAutoFull.ExitCode)"
+Assert-True ($rAutoFull.Stdout -match [regex]::Escape('Cadena auto: claude -> kimi -> codex')) '-Con auto announces the full chain, strongest brain first'
+
+# self-review guard: asking an AI to review its own change must be refused.
+$rSelf = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'claude' -Excluir 'claude'
+Assert-True ($rSelf.ExitCode -ne 0) '-Con claude -Excluir claude is refused (an AI must not review its own change)' "exit=$($rSelf.ExitCode)"
+Assert-True (($rSelf.Stdout + $rSelf.Stderr) -match 'no debe revisar su propio cambio') 'the self-review refusal explains itself plainly'
+
+# exit-3 contract: with NO AI CLI findable on the child's PATH, auto mode
+# must fall all the way through the chain and exit 3 (the harness reads
+# this as "fall back to your internal reviewer") -- without ever invoking
+# anything.
+$rNone = Invoke-CrossReviewAutoWithoutAiClisOnPath -RepoPath $pyRepo
+Assert-True ($rNone.ExitCode -eq 3) '-Con auto exits 3 when no external reviewer CLI is available (harness fallback contract)' "exit=$($rNone.ExitCode) stderr=$($rNone.Stderr)"
+Assert-True ($rNone.Stdout -match 'NINGUN revisor externo') 'the exit-3 path says plainly that no external reviewer could review'
+Assert-True ($rNone.Stdout -match 'no esta instalado') 'each unavailable candidate is reported as it is skipped'
 
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE

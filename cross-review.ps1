@@ -7,6 +7,25 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con kimi
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con codex -Alcance staged
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
+#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
+#
+# -Con auto: try the strongest available reviewer first and fall back down
+# the chain (claude -> kimi -> codex), skipping -Excluir (the AI that wrote
+# the change). claude is always invoked with ANTHROPIC_* and
+# CLAUDE_CODE_USE_* env vars stripped, so env-var redirections (a
+# 'glm'-launched session, Bedrock/Vertex toggles) cannot steer the review
+# away from the real Claude account (OAuth + the plan's default model);
+# this does not defend against a fake 'claude' binary planted on PATH.
+# Exit 3 -- ONLY in auto mode -- means no external reviewer in the chain
+# could deliver a review (caller falls back to its own internal reviewer
+# and must say so). In single mode the CLI's own exit code is passed
+# through as-is -- with ONE deliberate exception: exit 0 with EMPTY output
+# becomes exit 1, because an empty review is not a review (do not read 3
+# as a sentinel outside auto). The env stripping applies to EVERY claude
+# invocation (single mode included): on a machine where claude
+# authenticates ONLY via ANTHROPIC_API_KEY (no OAuth login), claude will
+# fail here by design -- in auto mode the chain then falls to the next
+# reviewer.
 #
 # -Alcance defaults to the combined working-tree + staged diff against HEAD
 # (everything not yet committed) when not specified.
@@ -26,9 +45,16 @@
 # three) -- so that is the one strategy this script uses for all of them.
 
 param(
+    # 'auto' = probar la cadena claude -> kimi -> codex (el cerebro mas fuerte
+    # primero) y usar el primero que responda, saltando -Excluir.
     [Parameter(Mandatory = $true)]
-    [ValidateSet('kimi', 'codex', 'claude')]
+    [ValidateSet('kimi', 'codex', 'claude', 'auto')]
     [string]$Con,
+
+    # La IA que ESCRIBIO el cambio, para saltarla en la cadena de 'auto':
+    # una IA no debe revisar su propio trabajo.
+    [ValidateSet('kimi', 'codex', 'claude', '')]
+    [string]$Excluir = '',
 
     [ValidateSet('staged', 'working', 'last-commit')]
     [string]$Alcance = '',
@@ -136,6 +162,11 @@ function ConvertTo-WindowsCliArg {
 # one is directly launchable this way. kimi and claude happen to resolve
 # straight to a .exe, so this matters mainly for codex, but resolving all
 # three the same way keeps this robust if that ever changes.
+function Test-CliAvailable {
+    param([string]$Name)
+    return (@(Get-Command -Name $Name -All -ErrorAction SilentlyContinue).Count -gt 0)
+}
+
 function Resolve-CliExePath {
     param([string]$Name)
     $allCmds = @(Get-Command -Name $Name -All -ErrorAction SilentlyContinue)
@@ -187,7 +218,7 @@ function Get-CliInvocation {
 }
 
 function Invoke-CliHeadless {
-    param([string]$Exe, [string]$Arguments, [string]$WorkingDirectory)
+    param([string]$Exe, [string]$Arguments, [string]$WorkingDirectory, [string[]]$StripEnvPrefixes = @())
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.Arguments = $Arguments
@@ -196,6 +227,19 @@ function Invoke-CliHeadless {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
+    foreach ($prefix in $StripEnvPrefixes) {
+        # Quitar del ambiente heredado toda variable con estos prefijos. El
+        # caso real: una sesion lanzada con 'glm' redirige el CLI de claude a
+        # otro proveedor/modelo via variables ANTHROPIC_*, y las
+        # CLAUDE_CODE_USE_* (Bedrock/Vertex) redirigen sin ese prefijo -- la
+        # revision cruzada debe ir a la cuenta real de Claude (login OAuth +
+        # el modelo default del plan, que sigue solo las mejoras de modelo).
+        # Limite honesto: esto neutraliza redirecciones POR VARIABLES DE
+        # ENTORNO; no defiende contra un binario 'claude' falso puesto antes
+        # en el PATH (eso ya es la maquina comprometida, otro problema).
+        $keysToRemove = @($psi.EnvironmentVariables.Keys) | Where-Object { $_ -like "$prefix*" }
+        foreach ($k in $keysToRemove) { $psi.EnvironmentVariables.Remove($k) }
+    }
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
@@ -206,8 +250,12 @@ function Invoke-CliHeadless {
     # would make them block waiting for input that never arrives; closing
     # it right away signals EOF immediately instead.
     $proc.StandardInput.Close()
+    # Leer stderr en paralelo (async) mientras se lee stdout: leer los dos
+    # secuencialmente puede deadlockear si el hijo llena el buffer del que
+    # no se esta leyendo (codex escribe su progreso a stderr, confirmado).
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
+    $stderr = $stderrTask.Result
     $proc.WaitForExit()
     return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
 }
@@ -223,6 +271,26 @@ Write-Host "CLI: $Con"
 
 if (-not (Test-IsGitRepo -RepoPath $RepoPath)) {
     throw "Esta carpeta no es un repositorio git (no encontre .git)."
+}
+
+# Cadena de candidatos -- se arma ANTES de tocar el diff, para que la
+# validacion (p.ej. pedir que una IA revise su propio cambio) falle claro
+# incluso cuando el diff este vacio. En 'auto' se intenta el cerebro mas
+# fuerte primero (claude = el modelo default del plan de la cuenta, que
+# sigue solo las mejoras de modelo), despues kimi (rapido), despues codex
+# (capaz pero de tiempos variables en esta maquina) -- saltando -Excluir.
+# Fail-open: si un candidato no esta instalado o no entrega revision, se
+# pasa al siguiente; si NINGUNO responde, exit 3 para que quien llama
+# (p.ej. el harness de SummonAI) caiga a su revisor interno y lo diga en
+# su recibo.
+if ($Con -eq 'auto') {
+    $chain = @('claude', 'kimi', 'codex') | Where-Object { $_ -ne $Excluir }
+    Write-Host "Cadena auto: $($chain -join ' -> ')$(if ($Excluir) { " (excluido: $Excluir, escribio el cambio)" })"
+} else {
+    if ($Excluir -eq $Con) {
+        throw "-Excluir '$Excluir' es el mismo CLI que -Con '$Con': una IA no debe revisar su propio cambio."
+    }
+    $chain = @($Con)
 }
 
 $alcanceLabelForDisplay = $Alcance
@@ -244,38 +312,107 @@ $tempDiffPath = Join-Path ([System.IO.Path]::GetTempPath()) ("quality-kit-review
 Write-Utf8NoBomFile -Path $tempDiffPath -Content $cappedDiff
 
 $prompt = Build-ReviewPrompt -DiffFilePath $tempDiffPath -Label $diffResult.Label -RepoName $repoName
-$invocation = Get-CliInvocation -Con $Con -Prompt $prompt
 
 try {
-    if ($DryRun) {
+    # OJO: nombre distinto de $LASTEXITCODE a proposito (PowerShell no
+    # distingue mayusculas en variables): sombrear la automatica seria una
+    # mina si mas adelante alguien corre un comando nativo dentro del loop.
+    $chainExitCode = 1
+    foreach ($candidate in $chain) {
+        if (-not (Test-CliAvailable -Name $candidate)) {
+            if ($Con -eq 'auto') {
+                Write-Host "==> '$candidate' no esta instalado en esta maquina; sigo con el siguiente de la cadena."
+                continue
+            }
+            throw "No encontre '$candidate' en el PATH de esta maquina. Confirma que la CLI esta instalada y accesible."
+        }
+
+        # Fail-open POR CANDIDATO en modo auto: si armar o lanzar la
+        # invocacion truena (exe corrupto, shim raro, etc.), eso no debe
+        # abortar la cadena entera con exit 1 -- se anota y se prueba el
+        # siguiente. En modo single se conserva el error claro de siempre.
+        $invocation = $null
+        try {
+            $invocation = Get-CliInvocation -Con $candidate -Prompt $prompt
+        } catch {
+            if ($Con -eq 'auto') {
+                Write-Host "==> ADVERTENCIA: no pude preparar la invocacion de $candidate ($($_.Exception.Message)). Sigo con el siguiente de la cadena."
+                continue
+            }
+            throw
+        }
+        $stripPrefixes = @()
+        if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_USE_') }
+
+        if ($DryRun) {
+            Write-Host ''
+            Write-Host '=== DRY RUN -- no se invoco ninguna IA ==='
+            if ($Con -eq 'auto') {
+                Write-Host "Candidato elegido (primer disponible de la cadena): $candidate"
+            }
+            if ($stripPrefixes.Count -gt 0) {
+                Write-Host "Nota: se invocaria con las variables de entorno $($stripPrefixes -join '* y ')* limpias (el comando de abajo no puede mostrarlo)."
+            }
+            Write-Host "Comando: $($invocation.Exe) $($invocation.Arguments)"
+            Write-Host ''
+            Write-Host '=== Prompt ==='
+            Write-Host $prompt
+            Write-Host ''
+            Write-Host "=== Archivo de diff (temporal): $tempDiffPath ==="
+            exit 0
+        }
+
+        Write-Host "==> Invocando $candidate de forma no interactiva..."
+        $result = $null
+        try {
+            $result = Invoke-CliHeadless -Exe $invocation.Exe -Arguments $invocation.Arguments -WorkingDirectory $RepoPath -StripEnvPrefixes $stripPrefixes
+        } catch {
+            if ($Con -eq 'auto') {
+                Write-Host "==> ADVERTENCIA: fallo al invocar $candidate ($($_.Exception.Message)). Sigo con el siguiente de la cadena."
+                continue
+            }
+            throw
+        }
+
         Write-Host ''
-        Write-Host '=== DRY RUN -- no se invoco ninguna IA ==='
-        Write-Host "Comando: $($invocation.Exe) $($invocation.Arguments)"
+        Write-Host "=== Respuesta de $candidate (codigo de salida: $($result.ExitCode)) ==="
+        Write-Host $result.Stdout
+        if ($result.Stderr) {
+            Write-Host ''
+            Write-Host '=== stderr ==='
+            Write-Host $result.Stderr
+        }
+
+        # Una revision "utilizable" = salio bien Y dijo algo. Un exit 0 con
+        # salida vacia no es una revision (y en 'auto' debe pasar al
+        # siguiente candidato, no dar el gate por bueno en silencio).
+        if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Stdout)) {
+            Write-Host ''
+            Write-Host "=== Revisor efectivo: $candidate ==="
+            exit 0
+        }
+
+        if ($result.ExitCode -ne 0) { $chainExitCode = $result.ExitCode } else { $chainExitCode = 1 }
+        $emptyNote = ''
+        if ([string]::IsNullOrWhiteSpace($result.Stdout)) { $emptyNote = ', salida vacia' }
         Write-Host ''
-        Write-Host '=== Prompt ==='
-        Write-Host $prompt
-        Write-Host ''
-        Write-Host "=== Archivo de diff (temporal): $tempDiffPath ==="
-        exit 0
+        if ($Con -eq 'auto') {
+            Write-Host "==> ADVERTENCIA: $candidate no entrego una revision utilizable (codigo $($result.ExitCode)$emptyNote). Sigo con el siguiente de la cadena."
+        } else {
+            Write-Host "==> ADVERTENCIA: $candidate no entrego una revision utilizable (codigo $($result.ExitCode)$emptyNote) -- revisa el stderr de arriba. Si es codex, el problema mas comun es tener que abrir 'codex' de forma interactiva una vez para aceptar la confianza del directorio (ver README, seccion Troubleshooting)."
+        }
     }
 
-    Write-Host "==> Invocando $Con de forma no interactiva..."
-    $result = Invoke-CliHeadless -Exe $invocation.Exe -Arguments $invocation.Arguments -WorkingDirectory $RepoPath
-
-    Write-Host ''
-    Write-Host "=== Respuesta de $Con (codigo de salida: $($result.ExitCode)) ==="
-    Write-Host $result.Stdout
-    if ($result.Stderr) {
+    if ($Con -eq 'auto') {
+        # El exit 3 como sentinel de "sin revisor externo" aplica SOLO al
+        # modo auto. En modo single el exit code del CLI se propaga tal
+        # cual (y un CLI tambien podria salir con 3 por sus propias
+        # razones) -- no leerlo como sentinel fuera de auto.
         Write-Host ''
-        Write-Host '=== stderr ==='
-        Write-Host $result.Stderr
+        Write-Host '==> NINGUN revisor externo de la cadena pudo revisar (exit 3). Quien pidio esta revision debe caer a su propio revisor interno y decirlo en su reporte.'
+        exit 3
     }
-
-    if ($result.ExitCode -ne 0) {
-        Write-Host ''
-        Write-Host "==> ADVERTENCIA: $Con salio con codigo $($result.ExitCode) -- revisa el stderr de arriba. Si es codex, el problema mas comun es tener que abrir 'codex' de forma interactiva una vez para aceptar la confianza del directorio (ver README, seccion Troubleshooting)."
-    }
-    exit $result.ExitCode
+    exit $chainExitCode
 } finally {
     if (-not $DryRun) {
         Remove-Item -LiteralPath $tempDiffPath -Force -ErrorAction SilentlyContinue

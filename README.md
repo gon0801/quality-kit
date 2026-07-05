@@ -153,10 +153,43 @@ frescos, no la misma IA revisandose a si misma.
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con kimi
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con codex -Alcance staged
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
 ```
 
-- `-Con` (obligatorio): que IA hace la revision -- `kimi`, `codex`, o
-  `claude`.
+- `-Con` (obligatorio): que IA hace la revision -- `kimi`, `codex`,
+  `claude`, o `auto`.
+- `-Con auto`: prueba la cadena `claude -> kimi -> codex` (el cerebro mas
+  fuerte primero) y usa el PRIMERO que entregue una revision de verdad,
+  saltando al que pongas en `-Excluir` (la IA que escribio el cambio: una
+  IA no debe revisar su propio trabajo). Si un candidato no esta instalado
+  o falla, pasa al siguiente sin frenarte; si NINGUNO responde, sale con
+  codigo 3 para que quien llamo (por ejemplo, el harness de SummonAI) caiga
+  a su revisor interno y lo diga en su reporte. Al final anuncia el
+  "Revisor efectivo" para que quede claro quien reviso de verdad.
+  Nota de diseno: `claude` se invoca SIEMPRE con las variables de entorno
+  `ANTHROPIC_*` y `CLAUDE_CODE_USE_*` limpias -- asi una redireccion por
+  variables (una sesion lanzada con `glm`, o los toggles de Bedrock/Vertex)
+  no desvia la revision: va a la cuenta real de Claude, con el modelo
+  default del plan (que mejora solo cuando Anthropic actualiza el plan, sin
+  tocar nada aca). Limite honesto: esto cubre redirecciones por variables
+  de entorno; un binario `claude` falso plantado en el PATH ya seria una
+  maquina comprometida, fuera del alcance de este script. Y si algun dia no
+  hay suscripcion de Claude, la cadena baja sola al siguiente cerebro
+  disponible. El codigo de salida 3 como senal de "sin revisor externo"
+  aplica SOLO al modo `auto`; en modo directo el codigo del CLI se propaga
+  tal cual, con UNA excepcion deliberada: salir con 0 pero sin decir nada
+  se convierte en codigo 1, porque una revision vacia no es una revision.
+  Dos consecuencias asumidas de la limpieza de variables (que aplica a
+  TODA invocacion de claude, tambien `-Con claude` directo): en una maquina
+  donde claude se autentique SOLO por ANTHROPIC_API_KEY (sin login OAuth),
+  claude va a fallar aqui a proposito -- en `auto` la cadena baja sola al
+  siguiente; y quien dependa de Bedrock/Vertex como unico acceso vera lo
+  mismo. En esta maquina el login es OAuth, asi que nada de esto aplica
+  hoy.
+  Este modo es el que usa el harness de SummonAI en los hosts que no son
+  Claude (Kimi, Codex, GLM): su gate de Review corre esto y le pega los
+  hallazgos a su revisor -- codigo escrito por un modelo menor siempre pasa
+  por el criterio del modelo mas fuerte disponible antes de cerrar.
 - `-Alcance` (opcional): que diferencias revisar.
   - `staged`: lo que ya hiciste `git add`.
   - `working`: lo que todavia NO hiciste `git add`.
