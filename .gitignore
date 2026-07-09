@@ -1,3 +1,6 @@
 # Throwaway fixtures the test suite creates and destroys on every run --
 # real git repos with real .git internals, never meant to be tracked.
 tests/temp-fixtures/
+
+# archivo de dueños personal de heal-repo.ps1 -- no se comparte
+my-owners.txt

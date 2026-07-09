@@ -1,5 +1,6 @@
 $files = @(
     'C:\Users\ehven\quality-kit\init-repo.ps1',
+    'C:\Users\ehven\quality-kit\heal-repo.ps1',
     'C:\Users\ehven\quality-kit\cross-review.ps1',
     'C:\Users\ehven\quality-kit\install-ai-rules.ps1',
     'C:\Users\ehven\quality-kit\uninstall-ai-rules.ps1',
