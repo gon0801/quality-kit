@@ -156,7 +156,13 @@ function Get-RepoName {
 
 function Build-ReviewPrompt {
     param([string]$DiffFilePath, [string]$Label, [string]$RepoName)
-    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. Lee el archivo '$DiffFilePath' (contiene un diff de git: $Label, del repositorio '$RepoName') y revisalo. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
+    # La clausula VERIFICAR nace de falsos positivos reales (retro Kimi
+    # 2026-07-09): el revisor dudo de un UNIQUE cuyo DDL existia, de un
+    # import que existia y de una funcion definida en otra parte -- todo
+    # codigo fuera del diff. Este candidato corre PARADO EN EL REPO (el
+    # working directory es el repo real), asi que puede y debe verificar
+    # antes de afirmar; solo si no puede, degrada el hallazgo a VERIFICAR:.
+    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. Lee el archivo '$DiffFilePath' (contiene un diff de git: $Label, del repositorio '$RepoName') y revisalo. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes en ciego -- tu directorio de trabajo ES el repositorio real: verificalo primero leyendo/grepeando el archivo en cuestion. Si no podes verificarlo, reportalo con el prefijo 'VERIFICAR:' en vez de afirmarlo como bug, diciendo exactamente que habria que confirmar. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
 }
 
 # Variante para claude: el diff viaja INLINE por stdin en vez de pedirle leer
@@ -166,7 +172,11 @@ function Build-ReviewPrompt {
 # en stdin la revision no necesita NINGUNA herramienta.
 function Build-ReviewPromptInline {
     param([string]$Label, [string]$RepoName)
-    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. A continuacion de estas instrucciones viene un diff de git ($Label, del repositorio '$RepoName'). Revisalo SIN usar ninguna herramienta: todo lo que necesitas ya esta en este mensaje. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
+    # Este candidato NO tiene herramientas por diseno (anti-cuelgue), asi que
+    # no puede verificar nada fuera del diff: todo hallazgo que dependa de
+    # codigo ausente va SIEMPRE como VERIFICAR:, nunca afirmado (misma retro
+    # de falsos positivos que Build-ReviewPrompt).
+    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. A continuacion de estas instrucciones viene un diff de git ($Label, del repositorio '$RepoName'). Revisalo SIN usar ninguna herramienta: todo lo que necesitas ya esta en este mensaje. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza y no tenes forma de ver el resto del repo: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes como bug -- reportalo con el prefijo 'VERIFICAR:' diciendo exactamente que habria que confirmar, y reserva las afirmaciones directas para lo que el propio diff demuestra. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
 }
 
 function ConvertTo-WindowsCliArg {
