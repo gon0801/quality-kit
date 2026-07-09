@@ -154,6 +154,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\c
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con codex -Alcance staged
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi -Archivos "engines/bid_motor.py,tests/test_bid_motor.py"
 ```
 
 - `-Con` (obligatorio): que IA hace la revision -- `kimi`, `codex`,
@@ -196,6 +197,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\c
   - `last-commit`: el ultimo commit ya hecho.
   - si no lo pasas: la combinacion de `staged` + `working` (todo lo que
     todavia no esta commiteado).
+- `-Archivos` (opcional): limita el diff a esos archivos (pathspecs
+  relativos a la raiz del repo, separados por coma en un solo argumento;
+  acepta backslashes de Windows y los normaliza). Nacio de una falla real
+  (retro Kimi 2026-07-09): un working tree con CUATRO fixes acumulados
+  produjo un diff tan grande que el revisor externo murio por timeout dos
+  veces (>300 s) sin entregar nada -- con el scope de la tarea en curso el
+  diff queda chico y los hallazgos relevantes. Combinable con `-Alcance`.
+  OJO: una ruta mal tipeada da diff vacio en silencio; por eso el mensaje
+  de "no hay diferencias" nombra el scope pedido, para que el typo se vea.
 - `-DryRun`: muestra el comando y el mensaje que se le mandaria a la IA,
   sin llamarla de verdad (util para probar sin gastar cuota).
 

@@ -37,6 +37,18 @@
 # -Alcance defaults to the combined working-tree + staged diff against HEAD
 # (everything not yet committed) when not specified.
 #
+# -Archivos limits the diff to the given paths (git pathspecs, relative to
+# the repo root; comma-separated in one argument or repeated). Born from a
+# real failure (retro Kimi 2026-07-09): a working tree holding FOUR
+# accumulated bug fixes produced a diff so large the external reviewer
+# timed out twice (>300 s) and delivered nothing -- scoping the review to
+# the current task's files keeps the diff small and the findings relevant.
+# Composable with -Alcance. CAREFUL: a mistyped path silently yields an
+# empty diff (git treats it as "no changes there"), so the empty-diff
+# message names the scope to make the typo visible.
+#
+#   ... cross-review.ps1 -Con auto -Excluir kimi -Archivos "engines/bid_motor.py,tests/test_bid_motor.py"
+#
 # -DryRun prints the exact command and prompt instead of calling the CLI --
 # used by the test suite so it never burns real quota / API usage.
 #
@@ -65,6 +77,12 @@ param(
 
     [ValidateSet('staged', 'working', 'last-commit')]
     [string]$Alcance = '',
+
+    # Pathspecs (relativos a la raiz del repo) para limitar el diff a los
+    # archivos de la TAREA en curso. Acepta lista separada por comas en un
+    # solo argumento (lo que llega desde 'powershell -File') o elementos
+    # repetidos. Vacio = diff completo del alcance elegido.
+    [string[]]$Archivos = @(),
 
     [string]$RepoPath = (Get-Location).Path,
 
@@ -98,7 +116,12 @@ function Test-IsGitRepo {
 # ------------------------------------------------------------------
 
 function Get-ReviewDiff {
-    param([string]$RepoPath, [string]$Alcance)
+    param([string]$RepoPath, [string]$Alcance, [string[]]$FileScope = @())
+    # El separador '--' + pathspecs limita cada diff a los archivos pedidos;
+    # con $FileScope vacio, $pathspecArgs queda vacio y los comandos son
+    # identicos a los de siempre.
+    $pathspecArgs = @()
+    if ($FileScope.Count -gt 0) { $pathspecArgs = @('--') + $FileScope }
     Push-Location -LiteralPath $RepoPath
     # Git routinely writes harmless warnings (CRLF/LF notices, etc.) to
     # stderr. With "2>&1" merging streams, PowerShell turns each stderr
@@ -110,20 +133,23 @@ function Get-ReviewDiff {
     $ErrorActionPreference = 'Continue'
     try {
         if ($Alcance -eq 'staged') {
-            $lines = @(& git diff --cached 2>&1)
+            $lines = @(& git diff --cached @pathspecArgs 2>&1)
             $label = 'cambios en stage (git diff --cached)'
         } elseif ($Alcance -eq 'working') {
-            $lines = @(& git diff 2>&1)
+            $lines = @(& git diff @pathspecArgs 2>&1)
             $label = 'cambios sin stage en el working tree (git diff)'
         } elseif ($Alcance -eq 'last-commit') {
             # "git show HEAD --patch" (not "git diff HEAD~1 HEAD") on
             # purpose: it works even on a repo's very first commit, which
             # has no parent to diff against.
-            $lines = @(& git show 'HEAD' '--patch' 2>&1)
+            $lines = @(& git show 'HEAD' '--patch' @pathspecArgs 2>&1)
             $label = 'el ultimo commit (git show HEAD --patch)'
         } else {
-            $lines = @(& git diff 'HEAD' 2>&1)
+            $lines = @(& git diff 'HEAD' @pathspecArgs 2>&1)
             $label = 'todo lo que falta commitear: stage + working tree combinados (git diff HEAD)'
+        }
+        if ($FileScope.Count -gt 0) {
+            $label += ", LIMITADO a los archivos de la tarea en curso: $($FileScope -join ', ')"
         }
         $gitExitCode = $LASTEXITCODE
     } finally {
@@ -382,9 +408,27 @@ $alcanceLabelForDisplay = $Alcance
 if ([string]::IsNullOrEmpty($alcanceLabelForDisplay)) { $alcanceLabelForDisplay = 'combinado (stage + working)' }
 Write-Host "Alcance: $alcanceLabelForDisplay"
 
-$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance
+# Normalizar -Archivos: 'powershell -File' entrega un solo string aunque el
+# parametro sea [string[]], asi que se acepta lista separada por comas y se
+# parte aqui. Backslashes -> slashes porque el pathspec de git no trata '\'
+# como separador de ruta (un path Windows pegado tal cual no matchea nada).
+$fileScope = @($Archivos |
+    ForEach-Object { $_ -split ',' } |
+    ForEach-Object { $_.Trim().Replace('\', '/') } |
+    Where-Object { $_ -ne '' })
+if ($fileScope.Count -gt 0) {
+    Write-Host "Archivos (pathspec de la tarea): $($fileScope -join ', ')"
+}
+
+$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope
 if ([string]::IsNullOrWhiteSpace($diffResult.Diff)) {
-    Write-Host '==> No hay diferencias para revisar en este alcance (diff vacio). Nada que hacer.'
+    if ($fileScope.Count -gt 0) {
+        # Un pathspec mal tipeado produce diff vacio en silencio -- nombrar
+        # el scope hace visible el typo en vez de un "nada que hacer" mudo.
+        Write-Host "==> No hay diferencias para revisar en este alcance dentro de los archivos pedidos ($($fileScope -join ', ')). Si esperabas cambios, revisa que las rutas sean correctas relativas a la raiz del repo."
+    } else {
+        Write-Host '==> No hay diferencias para revisar en este alcance (diff vacio). Nada que hacer.'
+    }
     exit 0
 }
 

@@ -12,6 +12,7 @@
 $ErrorActionPreference = 'Stop'
 $QualityKitDir = 'C:\Users\ehven\quality-kit'
 $InitRepoScript = Join-Path $QualityKitDir 'init-repo.ps1'
+$HealRepoScript = Join-Path $QualityKitDir 'heal-repo.ps1'
 $CrossReviewScript = Join-Path $QualityKitDir 'cross-review.ps1'
 $InstallAiRulesScript = Join-Path $QualityKitDir 'install-ai-rules.ps1'
 $UninstallAiRulesScript = Join-Path $QualityKitDir 'uninstall-ai-rules.ps1'
@@ -157,11 +158,22 @@ function Invoke-InitRepoWithoutBashOnPath {
     return Invoke-ScriptCaptureWithoutBashOnPath -ScriptPath $InitRepoScript -ScriptArgs @('-RepoPath', $RepoPath)
 }
 
+function Invoke-HealRepo {
+    param([string]$RepoPath, [switch]$AutoInit, [string]$OwnersFile = '')
+    $scriptArgs = @('-RepoPath', $RepoPath)
+    if ($AutoInit) { $scriptArgs += '-AutoInit' }
+    if ($OwnersFile -ne '') { $scriptArgs += @('-OwnersFile', $OwnersFile) }
+    return Invoke-ScriptCapture -ScriptPath $HealRepoScript -ScriptArgs $scriptArgs
+}
+
 function Invoke-CrossReviewDryRun {
-    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '')
+    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '')
     $scriptArgs = @('-Con', $Con, '-RepoPath', $RepoPath, '-DryRun')
     if ($Alcance -ne '') { $scriptArgs += @('-Alcance', $Alcance) }
     if ($Excluir -ne '') { $scriptArgs += @('-Excluir', $Excluir) }
+    # Un solo string (posiblemente con comas), igual que como llega desde
+    # 'powershell -File' en el mundo real -- el split lo hace el script.
+    if ($Archivos -ne '') { $scriptArgs += @('-Archivos', $Archivos) }
     return Invoke-ScriptCapture -ScriptPath $CrossReviewScript -ScriptArgs $scriptArgs
 }
 
@@ -736,6 +748,56 @@ Assert-True ($rNone.ExitCode -eq 3) '-Con auto exits 3 when no external reviewer
 Assert-True ($rNone.Stdout -match 'NINGUN revisor externo') 'the exit-3 path says plainly that no external reviewer could review'
 Assert-True ($rNone.Stdout -match 'no esta instalado') 'each unavailable candidate is reported as it is skipped'
 
+Write-Host ''
+Write-Host '=== TEST GROUP 3f (retro Kimi 2026-07-09): -Archivos limits the diff to the current task''s files ==='
+# The real failure: a working tree holding FOUR accumulated bug fixes made
+# the external reviewer time out twice reviewing everything at once. The
+# fix: -Archivos scopes the diff to the files of THIS task only.
+$scopeRepo = New-FakeGitRepo -Name 'fake-scope-repo'
+New-Item -ItemType Directory -Path (Join-Path $scopeRepo 'sub') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_a.py') -Content "def a():`n    return 1`n"
+Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_b.py') -Content "def b():`n    return 2`n"
+Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'sub\bug_c.py') -Content "def c():`n    return 3`n"
+Push-Location -LiteralPath $scopeRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+# Simulate the accumulated tree: THREE files changed, only one belongs to the task under review.
+Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_a.py') -Content "def a():`n    return 100  # marker_bug_a`n"
+Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_b.py') -Content "def b():`n    return 200  # marker_bug_b`n"
+Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'sub\bug_c.py') -Content "def c():`n    return 300  # marker_bug_c`n"
+
+$rScoped = Invoke-CrossReviewDryRun -RepoPath $scopeRepo -Con 'kimi' -Archivos 'bug_a.py'
+Assert-True ($rScoped.ExitCode -eq 0) '-Archivos scoped run exits 0' "exit=$($rScoped.ExitCode) stderr=$($rScoped.Stderr)"
+Assert-True ($rScoped.Stdout -match [regex]::Escape('Archivos (pathspec de la tarea): bug_a.py')) '-Archivos scope is announced in the output'
+$tempScoped = [regex]::Match($rScoped.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
+Assert-True ($tempScoped.Success) '-Archivos scoped run still references a temp diff file'
+if ($tempScoped.Success) {
+    $tempScopedPath = Join-Path ([System.IO.Path]::GetTempPath()) $tempScoped.Value
+    $tempScopedContent = Read-TextFile -Path $tempScopedPath
+    Assert-True ($tempScopedContent -match 'marker_bug_a') 'the scoped diff contains the in-scope file''s change'
+    Assert-True ($tempScopedContent -notmatch 'marker_bug_b') 'the scoped diff does NOT contain the other accumulated change (the whole point of -Archivos)'
+    Remove-Item -LiteralPath $tempScopedPath -Force -ErrorAction SilentlyContinue
+}
+
+# Comma-separated list in ONE argument (how it arrives via 'powershell -File')
+# plus a backslash Windows path: both files in, third still out.
+$rMulti = Invoke-CrossReviewDryRun -RepoPath $scopeRepo -Con 'kimi' -Archivos 'bug_a.py, sub\bug_c.py'
+$tempMulti = [regex]::Match($rMulti.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
+Assert-True ($tempMulti.Success) 'comma-separated -Archivos run references a temp diff file'
+if ($tempMulti.Success) {
+    $tempMultiPath = Join-Path ([System.IO.Path]::GetTempPath()) $tempMulti.Value
+    $tempMultiContent = Read-TextFile -Path $tempMultiPath
+    Assert-True ($tempMultiContent -match 'marker_bug_a') 'comma-separated scope includes the first file'
+    Assert-True ($tempMultiContent -match 'marker_bug_c') 'a backslash Windows path is normalized to a git pathspec and matches'
+    Assert-True ($tempMultiContent -notmatch 'marker_bug_b') 'the file outside the comma-separated scope stays out'
+    Remove-Item -LiteralPath $tempMultiPath -Force -ErrorAction SilentlyContinue
+}
+
+# A mistyped path yields an empty diff: must exit 0 but NAME the scope so
+# the typo is visible instead of a silent "nothing to do".
+$rTypo = Invoke-CrossReviewDryRun -RepoPath $scopeRepo -Con 'kimi' -Archivos 'no_existe.py'
+Assert-True ($rTypo.ExitCode -eq 0) 'a scope matching nothing exits 0 (empty diff, not an error)' "exit=$($rTypo.ExitCode)"
+Assert-True ($rTypo.Stdout -match 'dentro de los archivos pedidos') 'the empty-scoped-diff message names the scope so a typo is visible'
+
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE
 # home directories -- NEVER the real ~/.claude, ~/.codex, ~/.kimi-code.
@@ -924,6 +986,103 @@ Assert-True (-not (Test-Path -LiteralPath (Join-Path $fakeKimiSkillsDir 'docs-gr
 $rUninstallDocsGroomAgain = Invoke-UninstallDocsGroom
 Assert-True ($rUninstallDocsGroomAgain.ExitCode -eq 0) 'uninstall-docs-groom.ps1 exits 0 even when there is nothing left to remove' "exit=$($rUninstallDocsGroomAgain.ExitCode)"
 Assert-True ($rUninstallDocsGroomAgain.Stdout -match 'no existe -- nada que quitar') 'uninstall-docs-groom.ps1 reports plainly that there was nothing to remove on a repeat run'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 6: heal-repo.ps1 -- re-arms a config-present-but-hook-absent clone ==='
+# Reproduces the real incident: .pre-commit-config.yaml travels with a clone
+# (committed) but .git/hooks/pre-commit does NOT, so a fresh clone is born with
+# the lock disarmed and failing open in silence. heal-repo.ps1 must detect that
+# and re-arm it. This is the test that would have caught the gap the analysis
+# found (config sin hook read as "passed the checks").
+$healRepo = New-FakeGitRepo -Name 'fake-heal-repo'
+$healConfig = @'
+repos:
+  - repo: local
+    hooks:
+      - id: no-print
+        name: no debug prints
+        entry: echo checking
+        language: system
+      - id: trailing-ws
+        name: trailing whitespace
+        entry: echo ws
+        language: system
+'@
+Write-Utf8NoBomFile -Path (Join-Path $healRepo '.pre-commit-config.yaml') -Content $healConfig
+
+$healHookPath = Join-Path $healRepo '.git\hooks\pre-commit'
+Assert-True (-not (Test-Path -LiteralPath $healHookPath)) 'fresh clone starts with NO pre-commit hook installed (the disarmed-but-silent state)'
+
+$rHeal1 = Invoke-HealRepo -RepoPath $healRepo
+Assert-True ($rHeal1.ExitCode -eq 0) 'heal-repo.ps1 exits 0 after re-arming a disarmed clone' "exit=$($rHeal1.ExitCode) stderr=$($rHeal1.Stderr)"
+Assert-True ($rHeal1.Stdout -match 'CANDADO DESARMADO') 'heal-repo.ps1 LOUDLY reports the disarmed lock instead of failing open in silence'
+Assert-True ($rHeal1.Stdout -match 'RE-ARMADO') 'heal-repo.ps1 reports it re-armed the hook'
+$healHookContent = Read-TextFile -Path $healHookPath
+Assert-True ($null -ne $healHookContent -and $healHookContent -match 'generated by pre-commit') 'the pre-commit hook is now installed AND carries pre-commit''s own generated-file marker (really armed, not a lookalike)'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 6b: heal-repo.ps1 is idempotent -- a second run confirms armed, quietly ==='
+$rHeal2 = Invoke-HealRepo -RepoPath $healRepo
+Assert-True ($rHeal2.ExitCode -eq 0) 'second heal-repo.ps1 run exits 0' "exit=$($rHeal2.ExitCode)"
+Assert-True ($rHeal2.Stdout -match 'candados: 2 checks armados') 'heal-repo.ps1 announces the armed lock with the configured check count (distinguishes silent-present from silent-absent)'
+Assert-True (-not ($rHeal2.Stdout -match 'CANDADO DESARMADO')) 'an already-armed repo does NOT trigger the disarmed warning on re-run'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 6c: heal-repo.ps1 does not mistake a hand-written hook for the pre-commit lock ==='
+$handRepo = New-FakeGitRepo -Name 'fake-heal-handwritten'
+Write-Utf8NoBomFile -Path (Join-Path $handRepo '.pre-commit-config.yaml') -Content $healConfig
+$handHookPath = Join-Path $handRepo '.git\hooks\pre-commit'
+Write-Utf8NoBomFile -Path $handHookPath -Content "#!/bin/sh`necho hand-written`n"
+$rHealHand = Invoke-HealRepo -RepoPath $handRepo
+Assert-True ($rHealHand.Stdout -match 'CANDADO DESARMADO') 'a same-named but hand-written hook is NOT counted as armed -- heal still reports the lock disarmed'
+$handHookContent = Read-TextFile -Path $handHookPath
+Assert-True ($null -ne $handHookContent -and $handHookContent -match 'generated by pre-commit') 'heal re-installs the real pre-commit hook over the hand-written one'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 6d: heal-repo.ps1 on a repo with no config is a plain, non-error no-op ==='
+$noCfgRepo = New-FakeGitRepo -Name 'fake-heal-nocfg'
+$rHealNoCfg = Invoke-HealRepo -RepoPath $noCfgRepo
+Assert-True ($rHealNoCfg.ExitCode -eq 0) 'heal-repo.ps1 exits 0 when there is no .pre-commit-config.yaml to arm' "exit=$($rHealNoCfg.ExitCode)"
+Assert-True ($rHealNoCfg.Stdout -match 'sin .pre-commit-config.yaml') 'heal-repo.ps1 says plainly there are no locks configured, rather than pretending success'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 6e: heal-repo.ps1 -AutoInit sets up locks from scratch on a brand-new repo of mine ==='
+# The "I will not remember to run init-repo" case: a fresh `git init` with no
+# remote and no config. With -AutoInit it must run init-repo itself so the repo
+# protects itself without anyone remembering.
+$autoNewRepo = New-FakeGitRepo -Name 'fake-heal-autonew'
+Write-Utf8NoBomFile -Path (Join-Path $autoNewRepo 'app.py') -Content "print('hi')`n"
+$rAutoNew = Invoke-HealRepo -RepoPath $autoNewRepo -AutoInit
+Assert-True ($rAutoNew.ExitCode -eq 0) 'heal-repo.ps1 -AutoInit exits 0 on a brand-new repo' "exit=$($rAutoNew.ExitCode) stderr=$($rAutoNew.Stderr)"
+Assert-True ($rAutoNew.Stdout -match 'armandolos por primera vez') 'heal-repo.ps1 -AutoInit announces it is setting up the lock for the first time'
+Assert-True (Test-Path -LiteralPath (Join-Path $autoNewRepo '.pre-commit-config.yaml')) 'a .pre-commit-config.yaml was created from scratch by the auto-init'
+$autoNewHook = Read-TextFile -Path (Join-Path $autoNewRepo '.git\hooks\pre-commit')
+Assert-True ($null -ne $autoNewHook -and $autoNewHook -match 'generated by pre-commit') 'the pre-commit hook is armed after auto-init (no manual init-repo needed)'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 6f: heal-repo.ps1 -AutoInit NEVER touches a repo whose remote is someone else''s ==='
+# Safety boundary: a clone of a foreign repo (origin points elsewhere) must not
+# have config/CI/CLAUDE.md injected into it, even with -AutoInit.
+$foreignRepo = New-FakeGitRepo -Name 'fake-heal-foreign'
+Invoke-GitSilent -GitArgs @('-C', $foreignRepo, 'remote', 'add', 'origin', 'https://github.com/someone-else/their-project')
+$emptyOwners = Join-Path $TestFixturesDir 'owners-empty.txt'
+Write-Utf8NoBomFile -Path $emptyOwners -Content "# no owners`n"
+$rForeign = Invoke-HealRepo -RepoPath $foreignRepo -AutoInit -OwnersFile $emptyOwners
+Assert-True ($rForeign.ExitCode -eq 0) 'heal-repo.ps1 -AutoInit exits 0 (no-op) on a foreign-remote repo' "exit=$($rForeign.ExitCode)"
+Assert-True ($rForeign.Stdout -match 'no parece tuyo') 'heal-repo.ps1 reports it is leaving a foreign repo alone'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $foreignRepo '.pre-commit-config.yaml'))) 'NO .pre-commit-config.yaml is written into a repo whose remote is someone else''s'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 6g: heal-repo.ps1 -AutoInit DOES set up a repo whose remote matches my owners list ==='
+$ownedRepo = New-FakeGitRepo -Name 'fake-heal-owned'
+Invoke-GitSilent -GitArgs @('-C', $ownedRepo, 'remote', 'add', 'origin', 'https://github.com/myhandle/my-project')
+$myOwners = Join-Path $TestFixturesDir 'owners-mine.txt'
+Write-Utf8NoBomFile -Path $myOwners -Content "# mine`nmyhandle`n"
+$rOwned = Invoke-HealRepo -RepoPath $ownedRepo -AutoInit -OwnersFile $myOwners
+Assert-True ($rOwned.ExitCode -eq 0) 'heal-repo.ps1 -AutoInit exits 0 on a repo with a remote I own' "exit=$($rOwned.ExitCode) stderr=$($rOwned.Stderr)"
+Assert-True (Test-Path -LiteralPath (Join-Path $ownedRepo '.pre-commit-config.yaml')) 'a repo whose remote matches my owners list gets its lock set up automatically'
+$ownedHook = Read-TextFile -Path (Join-Path $ownedRepo '.git\hooks\pre-commit')
+Assert-True ($null -ne $ownedHook -and $ownedHook -match 'generated by pre-commit') 'the pre-commit hook is armed on the owned-remote repo after auto-init'
 
 Write-Host ''
 Write-Host "=== SUMMARY: $script:PassCount passed, $script:FailCount failed ==="
