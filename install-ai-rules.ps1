@@ -20,7 +20,10 @@
 param(
     [string]$ClaudeMdPath = (Join-Path $env:USERPROFILE '.claude\CLAUDE.md'),
     [string]$CodexAgentsPath = (Join-Path $env:USERPROFILE '.codex\AGENTS.md'),
-    [string]$KimiAgentsPath = (Join-Path $env:USERPROFILE '.kimi-code\AGENTS.md')
+    [string]$KimiAgentsPath = (Join-Path $env:USERPROFILE '.kimi-code\AGENTS.md'),
+    # Kilo Code (VSCode) lee ~/.config/kilo/AGENTS.md como instrucciones
+    # globales (doc oficial) -- cubre a GLM y cualquier modelo usado via Kilo.
+    [string]$KiloAgentsPath = (Join-Path $env:USERPROFILE '.config\kilo\AGENTS.md')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,4 +106,5 @@ Write-Host '=== quality-kit install-ai-rules.ps1 ==='
 Install-CalidadBlock -TargetPath $ClaudeMdPath -Label 'Claude'
 Install-CalidadBlock -TargetPath $CodexAgentsPath -Label 'Codex'
 Install-CalidadBlock -TargetPath $KimiAgentsPath -Label 'Kimi'
+Install-CalidadBlock -TargetPath $KiloAgentsPath -Label 'Kilo/GLM'
 Write-Host '=== Listo ==='
