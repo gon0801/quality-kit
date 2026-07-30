@@ -41,6 +41,7 @@ $SectionBody = @'
 1. Si el repo tiene candados de commit (pre-commit), correlos antes de dar por terminado -- JAMAS uses --no-verify ni los saltees; si algo falla, se arregla, no se esquiva.
 2. Cada bug que arreglas incluye, en el mismo cambio, una prueba que lo habria atrapado.
 3. Para cambios delicados, sugiere una revision cruzada con otra IA: C:\Users\ehven\quality-kit\cross-review.ps1
+   TOPE DURO: maximo 1 ronda; una segunda SOLO si la primera hallo severidad alta; JAMAS una tercera (los hallazgos residuales se declaran en el spec/PR, no se re-revisan). Cada ronda cuesta ~100-150k tokens.
 4. Si el repo no tiene kit de calidad todavia, sugiere correrlo una vez: C:\Users\ehven\quality-kit\init-repo.ps1 (no insistas si dice que no).
 5. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con C:\Users\ehven\quality-kit\install-repo-hygiene.ps1 -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
 '@
