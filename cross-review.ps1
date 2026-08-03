@@ -43,9 +43,16 @@
 # accumulated bug fixes produced a diff so large the external reviewer
 # timed out twice (>300 s) and delivered nothing -- scoping the review to
 # the current task's files keeps the diff small and the findings relevant.
-# Composable with -Alcance. CAREFUL: a mistyped path silently yields an
-# empty diff (git treats it as "no changes there"), so the empty-diff
+# Composable with -Alcance. CAREFUL: a mistyped path yields nothing
+# reviewable -- and with -Alcance last-commit that is NOT an empty string,
+# because "git show" always prints the commit header, so the guard requires
+# a real "diff --git " line rather than mere non-emptiness. Either way the
 # message names the scope to make the typo visible.
+#
+# A git failure is never reviewed: git's stderr is merged into the diff text
+# on purpose (to keep the diagnostic), so the exit code is checked and a
+# failed git aborts with exit 1 instead of shipping "fatal: ..." to a paid
+# reviewer.
 #
 #   ... cross-review.ps1 -Con auto -Excluir kimi -Archivos "engines/bid_motor.py,tests/test_bid_motor.py"
 #
@@ -397,6 +404,15 @@ if (-not (Test-IsGitRepo -RepoPath $RepoPath)) {
 if ($Con -eq 'auto') {
     $chain = @('claude', 'kimi', 'codex') | Where-Object { $_ -ne $Excluir }
     Write-Host "Cadena auto: $($chain -join ' -> ')$(if ($Excluir) { " (excluido: $Excluir, escribio el cambio)" })"
+    # En modo single hay validacion dura (-Excluir == -Con => error), pero en
+    # auto no habia NINGUNA: la cadena arranca por claude, que es casi siempre
+    # quien escribio el cambio, asi que olvidar -Excluir hacia que la IA se
+    # revisara a si misma en silencio -- perdiendo la independencia que es el
+    # proposito entero del script. No se aborta (rompería a quien ya llama sin
+    # el flag): se avisa fuerte y se sigue.
+    if (-not $Excluir) {
+        Write-Host "==> ADVERTENCIA: no pasaste -Excluir, asi que la cadena arranca por 'claude'. Si claude escribio este cambio se estaria revisando a si mismo, que es justo lo que esta revision debe evitar. Volve a correr con -Excluir <la IA que lo escribio>." -ForegroundColor Yellow
+    }
 } else {
     if ($Excluir -eq $Con) {
         throw "-Excluir '$Excluir' es el mismo CLI que -Con '$Con': una IA no debe revisar su propio cambio."
@@ -421,19 +437,41 @@ if ($fileScope.Count -gt 0) {
 }
 
 $diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope
-if ([string]::IsNullOrWhiteSpace($diffResult.Diff)) {
+
+# git puede FALLAR, y su stderr viene mezclado en el texto del diff (el "2>&1"
+# de arriba es a proposito, para conservar el diagnostico). Sin mirar el codigo
+# de salida, ese mensaje de error viajaba como si FUERA el diff y se le mandaba
+# a un revisor externo: una ronda entera (~100-150k tokens) quemada revisando un
+# "fatal: ...". Caso real reproducido: repo sin ningun commit + -Alcance
+# last-commit -> "fatal: ambiguous argument 'HEAD'". Fail-closed a proposito:
+# ante un git roto no se adivina, se para.
+if ($diffResult.ExitCode -ne 0) {
+    Write-Host ''
+    Write-Host "==> git fallo al armar el diff (codigo $($diffResult.ExitCode)). NO se invoca a ningun revisor. Salida de git:"
+    Write-Host $diffResult.Diff
+    exit 1
+}
+
+# "Vacio" no alcanza como unica senal de que no hay nada que revisar: con
+# -Alcance last-commit, "git show" SIEMPRE imprime la cabecera del commit, asi
+# que un pathspec mal tipeado devolvia esa cabecera (no vacia), el guardia no
+# disparaba y se mandaba a revisar un "diff" sin un solo cambio -- justo el
+# escenario que -Archivos existe para evitar. Un diff real SIEMPRE trae al menos
+# una linea "diff --git " (tambien los cambios de solo permisos, binarios,
+# renombres y submodulos), asi que esa es la senal fiable de contenido.
+$hasRealChanges = ($diffResult.Diff -match '(?m)^diff --git ')
+if ([string]::IsNullOrWhiteSpace($diffResult.Diff) -or (-not $hasRealChanges)) {
     if ($fileScope.Count -gt 0) {
-        # Un pathspec mal tipeado produce diff vacio en silencio -- nombrar
-        # el scope hace visible el typo en vez de un "nada que hacer" mudo.
+        # Un pathspec mal tipeado no cambia nada en silencio -- nombrar el
+        # scope hace visible el typo en vez de un "nada que hacer" mudo.
         Write-Host "==> No hay diferencias para revisar en este alcance dentro de los archivos pedidos ($($fileScope -join ', ')). Si esperabas cambios, revisa que las rutas sean correctas relativas a la raiz del repo."
     } else {
-        Write-Host '==> No hay diferencias para revisar en este alcance (diff vacio). Nada que hacer.'
+        Write-Host '==> No hay diferencias para revisar en este alcance (el diff no contiene ningun cambio). Nada que hacer.'
     }
     exit 0
 }
 
 $cappedDiff = Get-CappedDiff -Diff $diffResult.Diff -MaxChars $MaxDiffChars
-$wasTruncated = ($cappedDiff.Length -gt $diffResult.Diff.Length -or ($diffResult.Diff.Length -gt $MaxDiffChars))
 Write-Host "Tamano del diff: $($diffResult.Diff.Length) caracteres $(if ($diffResult.Diff.Length -gt $MaxDiffChars) { '(truncado a ' + $MaxDiffChars + ')' })"
 
 $repoName = Get-RepoName -RepoPath $RepoPath

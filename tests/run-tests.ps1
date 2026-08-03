@@ -798,6 +798,47 @@ $rTypo = Invoke-CrossReviewDryRun -RepoPath $scopeRepo -Con 'kimi' -Archivos 'no
 Assert-True ($rTypo.ExitCode -eq 0) 'a scope matching nothing exits 0 (empty diff, not an error)' "exit=$($rTypo.ExitCode)"
 Assert-True ($rTypo.Stdout -match 'dentro de los archivos pedidos') 'the empty-scoped-diff message names the scope so a typo is visible'
 
+Write-Host ''
+Write-Host '=== TEST GROUP 3g (audit 2026-08-03): a git failure never travels to the reviewer as a diff ==='
+# Get-ReviewDiff merges git's stderr into the diff text ON PURPOSE (keeps the
+# diagnostic), but nobody read git's exit code -- so in a repo with NO commits
+# "git show HEAD" fails and its "fatal: ambiguous argument 'HEAD'" was handed to
+# an external reviewer AS the diff, burning a whole ~100-150k-token round on an
+# error message. New-FakeGitRepo deliberately leaves the repo commit-less.
+$noCommitRepo = New-FakeGitRepo -Name 'fake-nocommit-repo'
+$rGitFail = Invoke-CrossReviewDryRun -RepoPath $noCommitRepo -Con 'kimi' -Alcance 'last-commit'
+Assert-True ($rGitFail.ExitCode -ne 0) 'a repo with no commits fails loudly instead of reviewing git''s own error text' "exit=$($rGitFail.ExitCode)"
+Assert-True ($rGitFail.Stdout -match 'git fallo al armar el diff') 'the git failure is reported plainly, naming git as the culprit'
+Assert-True ($rGitFail.Stdout -notmatch 'DRY RUN') 'no reviewer invocation is even prepared once git failed'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3h (audit 2026-08-03): last-commit + mistyped -Archivos is not a reviewable diff ==='
+# "git show" ALWAYS prints the commit header, so a pathspec matching nothing
+# still produced NON-empty output: the empty-diff guard never fired and a
+# "diff" carrying zero changes went out for review. Only the presence of a
+# "diff --git " line proves there is real content.
+$showRepo = New-FakeGitRepo -Name 'fake-showscope-repo'
+Write-Utf8NoBomFile -Path (Join-Path $showRepo 'real.py') -Content "def real():`n    return 1  # marker_real`n"
+Push-Location -LiteralPath $showRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
+$rShowTypo = Invoke-CrossReviewDryRun -RepoPath $showRepo -Con 'kimi' -Alcance 'last-commit' -Archivos 'no_existe.py'
+Assert-True ($rShowTypo.ExitCode -eq 0) 'a last-commit scope matching nothing exits 0 (nothing to review, not an error)' "exit=$($rShowTypo.ExitCode)"
+Assert-True ($rShowTypo.Stdout -match 'dentro de los archivos pedidos') 'the message names the scope so the typo is visible'
+Assert-True ($rShowTypo.Stdout -notmatch 'DRY RUN') 'a bare commit header with no changes is never sent out as a diff'
+# Sanity: the same scope with the RIGHT path still reaches the reviewer.
+$rShowOk = Invoke-CrossReviewDryRun -RepoPath $showRepo -Con 'kimi' -Alcance 'last-commit' -Archivos 'real.py'
+Assert-True ($rShowOk.Stdout -match 'DRY RUN') 'a last-commit scope with real changes still reaches the reviewer'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3i (audit 2026-08-03): -Con auto without -Excluir warns about self-review ==='
+# Single mode refuses -Excluir == -Con outright, but auto had no guard at all:
+# the chain starts at claude, usually the very AI that wrote the change, so
+# forgetting the flag silently destroyed the independence this script exists for.
+$rAutoNoExcl = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto'
+Assert-True ($rAutoNoExcl.Stdout -match 'no pasaste -Excluir') '-Con auto without -Excluir warns that the first candidate may be reviewing its own change'
+$rAutoExcl = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto' -Excluir 'claude'
+Assert-True ($rAutoExcl.Stdout -notmatch 'no pasaste -Excluir') 'the warning disappears once -Excluir is given'
+
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE
 # home directories -- NEVER the real ~/.claude, ~/.codex, ~/.kimi-code.
