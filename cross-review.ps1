@@ -11,11 +11,20 @@
 #
 # -Con auto: try the strongest available reviewer first and fall back down
 # the chain (claude -> kimi -> codex), skipping -Excluir (the AI that wrote
-# the change). claude is always invoked with ANTHROPIC_* and
-# CLAUDE_CODE_USE_* env vars stripped, so env-var redirections (a
-# 'glm'-launched session, Bedrock/Vertex toggles) cannot steer the review
-# away from the real Claude account (OAuth + the plan's default model);
-# this does not defend against a fake 'claude' binary planted on PATH.
+# the change). claude is always invoked with ANTHROPIC_*, CLAUDE_CODE_USE_*
+# and CLAUDE_CONFIG_DIR env vars stripped, so env-var redirections (a
+# 'glm'-launched session, Bedrock/Vertex toggles, a relocated config tree
+# pointing at another account) cannot steer the review away from the real
+# Claude account (OAuth + the plan's default model).
+#
+# Known, DELIBERATE limits of that stripping -- it is not a sandbox:
+#   - a fake 'claude' binary planted earlier on PATH (that is already a
+#     compromised machine, a different problem);
+#   - HTTP_PROXY / HTTPS_PROXY / NODE_EXTRA_CA_CERTS, which the CLI does
+#     honour and could route the review through an intermediary. They are
+#     NOT stripped on purpose: a proxy is usually mandatory infrastructure,
+#     not an attack, and clearing it would cut off network access for
+#     anyone who legitimately needs it.
 # -TimeoutSec (default 300): hard per-candidate cap -- a hung CLI gets
 # killed (exit 124 in single mode) and the auto chain moves on to the next
 # candidate. Added after a real hang: without it, this script (and the
@@ -518,7 +527,13 @@ try {
             throw
         }
         $stripPrefixes = @()
-        if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_USE_') }
+        # CLAUDE_CONFIG_DIR se agrego tras verificarlo en vivo (2026-08-03):
+        # apuntada a una carpeta vacia, la CLI construye ahi un arbol de config
+        # completo (.claude.json, projects, sessions), o sea que redirige
+        # configuracion Y credenciales -- y escapaba a los dos prefijos de
+        # arriba. Sin limpiarla, una sesion lanzada con ella puesta mandaba la
+        # revision a otra cuenta sin que nadie se enterara.
+        if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_USE_', 'CLAUDE_CONFIG_DIR') }
 
         if ($DryRun) {
             Write-Host ''
@@ -527,7 +542,7 @@ try {
                 Write-Host "Candidato elegido (primer disponible de la cadena): $candidate"
             }
             if ($stripPrefixes.Count -gt 0) {
-                Write-Host "Nota: se invocaria con las variables de entorno $($stripPrefixes -join '* y ')* limpias (el comando de abajo no puede mostrarlo)."
+                Write-Host "Nota: se invocaria con las variables de entorno $(($stripPrefixes | ForEach-Object { $_ + '*' }) -join ', ') limpias (el comando de abajo no puede mostrarlo)."
             }
             if ($candidateStdin) {
                 Write-Host "Nota: a $candidate el diff se le entrega inline por stdin (sin lecturas de archivo, sin superficie de permisos que pueda colgarse); el archivo temporal de abajo se genera igual para inspeccion, pero $candidate NO lo lee."

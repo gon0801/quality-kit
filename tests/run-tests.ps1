@@ -839,6 +839,56 @@ Assert-True ($rAutoNoExcl.Stdout -match 'no pasaste -Excluir') '-Con auto withou
 $rAutoExcl = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto' -Excluir 'claude'
 Assert-True ($rAutoExcl.Stdout -notmatch 'no pasaste -Excluir') 'the warning disappears once -Excluir is given'
 
+Write-Host ''
+Write-Host '=== TEST GROUP 3j (audit 2026-08-03): env-var redirections are actually stripped before claude runs ==='
+# Verified live: CLAUDE_CONFIG_DIR pointed at an empty folder makes the real
+# CLI build a whole config tree there (.claude.json, projects, sessions) --
+# it redirects configuration AND credentials, and it escaped both existing
+# prefixes, so a session launched with it set sent the review to another
+# account silently.
+# This test runs for real (no -DryRun) against a FAKE claude on PATH that only
+# reports which vars reached it: zero AI quota, real end-to-end stripping.
+function Invoke-CrossReviewWithFakeClaude {
+    param([string]$RepoPath, [string]$FakeCliDir)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $CrossReviewScript, '-Con', 'claude', '-RepoPath', $RepoPath)
+    $quotedParts = @()
+    foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
+    $psi.Arguments = ($quotedParts -join ' ')
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    # La CLI falsa va PRIMERO en el PATH para ganarle a la real.
+    $psi.EnvironmentVariables['Path'] = $FakeCliDir + ';' + $psi.EnvironmentVariables['Path']
+    # Redirecciones de mentira que el script DEBE limpiar...
+    $psi.EnvironmentVariables['CLAUDE_CONFIG_DIR'] = 'C:\fake\redirected-config'
+    $psi.EnvironmentVariables['ANTHROPIC_BASE_URL'] = 'https://fake.example/redirect'
+    # ...y una que a proposito NO debe limpiar (ver cabecera del script).
+    $psi.EnvironmentVariables['HTTPS_PROXY'] = 'http://fake-proxy.example:8080'
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.Start() | Out-Null
+    $proc.StandardInput.Close()
+    $stdout = $proc.StandardOutput.ReadToEnd()
+    $stderr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+}
+
+$fakeCliDir = Join-Path $TestFixturesDir 'fake-cli-bin'
+New-Item -ItemType Directory -Path $fakeCliDir -Force | Out-Null
+# CRLF a proposito: cmd.exe puede tropezar con un .cmd de solo LF.
+$fakeClaudeCmd = "@echo off`r`nif defined CLAUDE_CONFIG_DIR (echo CFG=SET) else (echo CFG=UNSET)`r`nif defined ANTHROPIC_BASE_URL (echo BASE=SET) else (echo BASE=UNSET)`r`nif defined HTTPS_PROXY (echo PROXY=SET) else (echo PROXY=UNSET)`r`n"
+Write-Utf8NoBomFile -Path (Join-Path $fakeCliDir 'claude.cmd') -Content $fakeClaudeCmd
+# Un cambio sin commitear garantiza un diff real que revisar.
+Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`ndef div(a, b):`n    return a / b  # marker_env_test`n"
+$rEnv = Invoke-CrossReviewWithFakeClaude -RepoPath $pyRepo -FakeCliDir $fakeCliDir
+Assert-True ($rEnv.Stdout -match 'CFG=UNSET') 'CLAUDE_CONFIG_DIR is stripped before claude runs (a relocated config cannot redirect the review to another account)' "stdout=$($rEnv.Stdout)"
+Assert-True ($rEnv.Stdout -match 'BASE=UNSET') 'ANTHROPIC_* is still stripped (regression guard on the behaviour that already worked)'
+Assert-True ($rEnv.Stdout -match 'PROXY=SET') 'HTTPS_PROXY is deliberately NOT stripped -- a proxy is usually mandatory infrastructure, and clearing it would cut off legitimate network access'
+
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE
 # home directories -- NEVER the real ~/.claude, ~/.codex, ~/.kimi-code.
