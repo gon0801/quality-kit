@@ -552,7 +552,11 @@ try {
                 Write-Host "Candidato elegido (primer disponible de la cadena): $candidate"
             }
             if ($stripPrefixes.Count -gt 0) {
-                Write-Host "Nota: se invocaria con las variables de entorno $(($stripPrefixes | ForEach-Object { $_ + '*' }) -join ', ') limpias (el comando de abajo no puede mostrarlo)."
+                # El '*' solo va en los que SON prefijo. CLAUDE_CONFIG_DIR es una
+                # variable exacta y mostrarla como 'CLAUDE_CONFIG_DIR*' sugeria un
+                # comodin que no existe en la practica.
+                $shown = $stripPrefixes | ForEach-Object { if ($_.EndsWith('_')) { $_ + '*' } else { $_ } }
+                Write-Host "Nota: se invocaria con las variables de entorno $($shown -join ', ') limpias (el comando de abajo no puede mostrarlo)."
             }
             if ($candidateStdin) {
                 Write-Host "Nota: a $candidate el diff se le entrega inline por stdin (sin lecturas de archivo, sin superficie de permisos que pueda colgarse); el archivo temporal de abajo se genera igual para inspeccion, pero $candidate NO lo lee."

@@ -910,6 +910,84 @@ Assert-True ($rEnv.Stdout -match 'BASE=UNSET') 'ANTHROPIC_* is still stripped (r
 Assert-True ($rEnv.Stdout -match 'OAUTH=UNSET') 'CLAUDE_CODE_OAUTH_TOKEN is stripped too -- the old CLAUDE_CODE_USE_ prefix left this credential door open (kimi cross-review 2026-08-03)'
 Assert-True ($rEnv.Stdout -match 'PROXY=SET') 'HTTPS_PROXY is deliberately NOT stripped -- a proxy is usually mandatory infrastructure, and clearing it would cut off legitimate network access'
 
+Write-Host ''
+Write-Host '=== TEST GROUP 3k (kimi cross-review 2026-08-03): saikit-gate-heal refuses a duplicated anchor ==='
+# saikit-gate-heal patches the kit hook with String.Replace, which replaces ALL
+# occurrences: a duplicated anchor would inject the sentinel block twice, and the
+# marker check would then report "ya-parchado" forever, hiding the damage. The
+# pristine kit hook has each anchor exactly once TODAY, but that is a property of
+# third-party code that any update can break -- so the script checks instead of
+# assuming. The fixture is synthetic (the real hook lives outside this repo).
+$SaikitGateHealScript = Join-Path $QualityKitDir 'saikit-gate-heal.ps1'
+function Invoke-SaikitGateHeal {
+    param([string]$FakeHome)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'powershell'
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $SaikitGateHealScript)
+    $quotedParts = @()
+    foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
+    $psi.Arguments = ($quotedParts -join ' ')
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    # Home falso: el script real toca ~/.claude, ~/.codex, ~/.cursor y ~/.agents.
+    $psi.EnvironmentVariables['USERPROFILE'] = $FakeHome
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    $proc.Start() | Out-Null
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.StandardInput.Close()
+    $proc.WaitForExit()
+    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
+}
+
+# Hook sintetico minimo que contiene las tres anclas que el parche busca.
+$anchorBlock = @'
+#!/usr/bin/env bash
+MAX_CYCLES=2
+
+start_harness() {
+  prompt_text="$(json_string_field prompt)"
+  if [ -z "$prompt_text" ]; then prompt_text="$INPUT"; fi
+  if ! is_engineering_task "$prompt_text"; then
+    emit_allow
+  fi
+  # Skip the gate for trivial, low-risk edits (copy/text, spacing, formatting,
+  # renames, comments). A substantive-work signal in the prompt overrides this.
+  if is_trivial_task "$prompt_text"; then
+    emit_allow
+  fi
+  echo start
+}
+
+record_tool_evidence() {
+  event_name="$(json_string_field hook_event_name)"
+  echo tool
+}
+'@
+
+# Caso sano: una sola vez cada ancla -> parcha.
+$healHomeOk = Join-Path $TestFixturesDir 'fake-home-heal-ok'
+New-Item -ItemType Directory -Path (Join-Path $healHomeOk '.claude\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeOk '.claude\hooks\summonaikit-harness.sh') -Content $anchorBlock
+$rHealOk = Invoke-SaikitGateHeal -FakeHome $healHomeOk
+$patchedOk = Read-TextFile -Path (Join-Path $healHomeOk '.claude\hooks\summonaikit-harness.sh')
+Assert-True ($patchedOk -match 'SAIKIT-SENTINEL-GATE') 'sanity: a hook with each anchor exactly once does get patched'
+Assert-True ($rHealOk.ExitCode -eq 0) 'saikit-gate-heal exits 0 on the healthy case (fail-open by design)' "exit=$($rHealOk.ExitCode)"
+
+# Caso roto: el ancla A duplicada -> NO debe parchar, y debe decirlo.
+$healHomeDup = Join-Path $TestFixturesDir 'fake-home-heal-dup'
+New-Item -ItemType Directory -Path (Join-Path $healHomeDup '.claude\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeDup '.claude\hooks\summonaikit-harness.sh') -Content ($anchorBlock -replace 'MAX_CYCLES=2', "MAX_CYCLES=2`nMAX_CYCLES=2")
+$rHealDup = Invoke-SaikitGateHeal -FakeHome $healHomeDup
+$afterDup = Read-TextFile -Path (Join-Path $healHomeDup '.claude\hooks\summonaikit-harness.sh')
+Assert-True ($afterDup -notmatch 'SAIKIT-SENTINEL-GATE') 'a duplicated anchor is NOT patched -- String.Replace would have injected the block twice'
+Assert-True ($rHealDup.Stdout -match 'ANCLAS-CAMBIARON') 'the duplicated anchor is reported loudly instead of failing silently'
+Assert-True ($rHealDup.Stdout -match 'A=2') 'the report names which anchor and how many times it appeared'
+Assert-True ($rHealDup.ExitCode -eq 0) 'even on a refused patch the script exits 0 -- it must never break a session start' "exit=$($rHealDup.ExitCode)"
+
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE
 # home directories -- NEVER the real ~/.claude, ~/.codex, ~/.kimi-code.

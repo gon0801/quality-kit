@@ -42,6 +42,20 @@ $MARKER = 'SAIKIT-SENTINEL-GATE v1'
 
 function ToLf([string]$s) { return ($s -replace "`r`n", "`n") }
 
+# Cuenta ocurrencias literales (Ordinal, sin regex: las anclas traen $, (, ) y
+# corchetes que un -match interpretaria).
+function Get-LiteralCount {
+    param([string]$Haystack, [string]$Needle)
+    if ([string]::IsNullOrEmpty($Needle)) { return 0 }
+    $count = 0
+    $i = 0
+    while (($i = $Haystack.IndexOf($Needle, $i, [System.StringComparison]::Ordinal)) -ge 0) {
+        $count++
+        $i += $Needle.Length
+    }
+    return $count
+}
+
 # --- anclas: texto literal del hook pristino donde se inyecta el parche ---
 $anchorA = ToLf "MAX_CYCLES=2"
 
@@ -130,14 +144,22 @@ foreach ($path in $targets) {
         continue
     }
 
-    # Si el kit cambio su codigo, las anclas dejan de existir. Reportarlo fuerte
-    # en vez de fallar en silencio: un parche que no aplico es un gate apagado.
-    $missing = @()
-    if (-not $lf.Contains($anchorA)) { $missing += 'A' }
-    if (-not $lf.Contains($anchorB)) { $missing += 'B' }
-    if (-not $lf.Contains($anchorC)) { $missing += 'C' }
-    if ($missing.Count -gt 0) {
-        $results += [pscustomobject]@{ hook = $short; estado = "ANCLAS-CAMBIARON ($($missing -join ',')) - revisar a mano" }
+    # Cada ancla debe aparecer EXACTAMENTE una vez.
+    #   0 veces -> el kit cambio su codigo y el parche ya no aplica.
+    #   2+ veces -> String.Replace reemplaza TODAS: el parche se inyectaria
+    #   duplicado y el chequeo de marcador impediria detectarlo despues.
+    # Hoy es 1/1/1 en el hook pristino (verificado), pero eso es una propiedad de
+    # codigo de terceros que cualquier update puede romper, asi que se comprueba
+    # en vez de asumirse. Hallazgo de la revision cruzada de kimi, 2026-08-03.
+    # Reportarlo fuerte en vez de fallar en silencio: un parche que no aplico es
+    # un gate apagado.
+    $bad = @()
+    foreach ($anchor in @(@{ k = 'A'; v = $anchorA }, @{ k = 'B'; v = $anchorB }, @{ k = 'C'; v = $anchorC })) {
+        $n = Get-LiteralCount -Haystack $lf -Needle $anchor.v
+        if ($n -ne 1) { $bad += "$($anchor.k)=$n" }
+    }
+    if ($bad.Count -gt 0) {
+        $results += [pscustomobject]@{ hook = $short; estado = "ANCLAS-CAMBIARON ($($bad -join ',')) - revisar a mano" }
         continue
     }
 

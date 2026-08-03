@@ -34,6 +34,16 @@ def main() -> int:
     args = ap.parse_args()
 
     mem_dir = args.dir
+    # Corre como hook SessionStart: un directorio ausente (máquina nueva, rename,
+    # typo en --dir) hacía que os.listdir tirara un traceback en CADA arranque de
+    # sesión. Mismo criterio fail-open que saikit-gate-heal.ps1: en modo hook se
+    # calla; en modo reporte lo dice claro y sale con error.
+    if not os.path.isdir(mem_dir):
+        if args.auto:
+            return 0
+        print(f"No existe el directorio de memoria: {mem_dir}")
+        return 1
+
     files = sorted(f for f in os.listdir(mem_dir) if f.endswith(".md"))
     if not files:
         return 0
@@ -41,7 +51,9 @@ def main() -> int:
     sizes = {}  # name -> (lines, words)
     for f in files:
         txt = open(os.path.join(mem_dir, f), encoding="utf-8").read()
-        sizes[f] = (txt.count("\n") + 1, len(txt.split()))
+        # splitlines() y no count("\n")+1: este último cuenta una línea de más en
+        # todo archivo que termina con newline (casi todos), corriendo el umbral.
+        sizes[f] = (len(txt.splitlines()), len(txt.split()))
 
     idx_txt = ""
     if os.path.exists(os.path.join(mem_dir, "MEMORY.md")):
@@ -51,16 +63,25 @@ def main() -> int:
     big = [(n, sizes[n][0]) for n in files if n != "MEMORY.md" and sizes[n][0] > LIMIT_LINES]
     big.sort(key=lambda x: -x[1])
 
-    # 2. Huérfanos: en disco, no linkeados en MEMORY.md
-    orphans = [n for n in files if n != "MEMORY.md" and f"]({n})" not in idx_txt]
+    # 2. Huérfanos: en disco, no linkeados en MEMORY.md.
+    # El substring `](nombre.md)` daba falsos huérfanos en cuanto el link traía
+    # ancla `](x.md#seccion)` o ruta relativa `](./x.md)`. Se extraen los destinos
+    # y se comparan por nombre, tolerando ambas formas.
+    linked = set(re.findall(r"\]\((?:\./)?([^)#\s]+\.md)", idx_txt))
+    linked = {os.path.basename(t) for t in linked}
+    orphans = [n for n in files if n != "MEMORY.md" and n not in linked]
 
     # 3. Links rotos: [[x]] sin archivo, y MEMORY.md -> archivo inexistente
     broken = []
     for n in files:
         txt = open(os.path.join(mem_dir, n), encoding="utf-8").read()
-        for m in re.findall(r"\[\[([a-z0-9\-]+)\]\]", txt):
-            if m != "skill:goncloud-audit-amazon-motor" and not os.path.exists(
-                    os.path.join(mem_dir, m + ".md")):
+        # El regex viejo `[a-z0-9\-]+` dejaba SIN CHEQUEAR todo link con
+        # mayúsculas, guion bajo, ':' o extensión — justo los malformados que hay
+        # que cazar. Y volvía inalcanzable la excepción hardcodeada que lo
+        # acompañaba (contenía ':', que el propio regex nunca podía capturar), por
+        # eso se elimina: era código muerto sin ninguna referencia viva.
+        for m in re.findall(r"\[\[([^\]\[]+)\]\]", txt):
+            if not os.path.exists(os.path.join(mem_dir, m + ".md")):
                 broken.append(f"{n}: [[{m}]]")
     for m in re.findall(r"\]\(([^)]+\.md)\)", idx_txt):
         if not os.path.exists(os.path.join(mem_dir, m)):
