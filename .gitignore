@@ -4,3 +4,6 @@ tests/temp-fixtures/
 
 # archivo de dueños personal de heal-repo.ps1 -- no se comparte
 my-owners.txt
+
+# Estado local de Claude Code (session logs, journals, __pycache__)
+.claude/
