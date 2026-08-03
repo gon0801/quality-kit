@@ -104,11 +104,15 @@ function Invoke-ScriptCapture {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
+    # Lecturas ASYNC antes de esperar: en serie (stdout hasta EOF y despues
+    # stderr) se traba si el hijo llena el buffer del pipe de stderr (~4KB)
+    # mientras el padre sigue bloqueado leyendo stdout. Invoke-CliHeadless, en
+    # cross-review.ps1, ya usa esta forma correcta.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.StandardInput.Close()
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
     $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
 }
 
 # Same as Invoke-ScriptCapture, but strips bash.exe's own directories from
@@ -141,11 +145,15 @@ function Invoke-ScriptCaptureWithoutBashOnPath {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
+    # Lecturas ASYNC antes de esperar: en serie (stdout hasta EOF y despues
+    # stderr) se traba si el hijo llena el buffer del pipe de stderr (~4KB)
+    # mientras el padre sigue bloqueado leyendo stdout. Invoke-CliHeadless, en
+    # cross-review.ps1, ya usa esta forma correcta.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.StandardInput.Close()
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
     $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
 }
 
 function Invoke-InitRepo {
@@ -209,11 +217,15 @@ function Invoke-CrossReviewAutoWithoutAiClisOnPath {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
+    # Lecturas ASYNC antes de esperar: en serie (stdout hasta EOF y despues
+    # stderr) se traba si el hijo llena el buffer del pipe de stderr (~4KB)
+    # mientras el padre sigue bloqueado leyendo stdout. Invoke-CliHeadless, en
+    # cross-review.ps1, ya usa esta forma correcta.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.StandardInput.Close()
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
     $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
 }
 
 # ------------------------------------------------------------------
