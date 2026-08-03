@@ -865,28 +865,37 @@ function Invoke-CrossReviewWithFakeClaude {
     # Redirecciones de mentira que el script DEBE limpiar...
     $psi.EnvironmentVariables['CLAUDE_CONFIG_DIR'] = 'C:\fake\redirected-config'
     $psi.EnvironmentVariables['ANTHROPIC_BASE_URL'] = 'https://fake.example/redirect'
+    # Credencial alternativa que el prefijo viejo CLAUDE_CODE_USE_ no cubria
+    # (hallazgo de la revision cruzada de kimi, 2026-08-03).
+    $psi.EnvironmentVariables['CLAUDE_CODE_OAUTH_TOKEN'] = 'fake-oauth-token'
     # ...y una que a proposito NO debe limpiar (ver cabecera del script).
     $psi.EnvironmentVariables['HTTPS_PROXY'] = 'http://fake-proxy.example:8080'
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
+    # Lecturas ASYNC antes de esperar (hallazgo de la revision cruzada de kimi,
+    # 2026-08-03): leer stdout hasta EOF y despues stderr EN SERIE se traba si
+    # el hijo llena el buffer del pipe de stderr (~4KB) mientras el padre sigue
+    # bloqueado en stdout. Invoke-CliHeadless, en cross-review.ps1, ya usa esta
+    # forma correcta; este helper repetia el patron riesgoso.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.StandardInput.Close()
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
     $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
 }
 
 $fakeCliDir = Join-Path $TestFixturesDir 'fake-cli-bin'
 New-Item -ItemType Directory -Path $fakeCliDir -Force | Out-Null
 # CRLF a proposito: cmd.exe puede tropezar con un .cmd de solo LF.
-$fakeClaudeCmd = "@echo off`r`nif defined CLAUDE_CONFIG_DIR (echo CFG=SET) else (echo CFG=UNSET)`r`nif defined ANTHROPIC_BASE_URL (echo BASE=SET) else (echo BASE=UNSET)`r`nif defined HTTPS_PROXY (echo PROXY=SET) else (echo PROXY=UNSET)`r`n"
+$fakeClaudeCmd = "@echo off`r`nif defined CLAUDE_CONFIG_DIR (echo CFG=SET) else (echo CFG=UNSET)`r`nif defined ANTHROPIC_BASE_URL (echo BASE=SET) else (echo BASE=UNSET)`r`nif defined CLAUDE_CODE_OAUTH_TOKEN (echo OAUTH=SET) else (echo OAUTH=UNSET)`r`nif defined HTTPS_PROXY (echo PROXY=SET) else (echo PROXY=UNSET)`r`n"
 Write-Utf8NoBomFile -Path (Join-Path $fakeCliDir 'claude.cmd') -Content $fakeClaudeCmd
 # Un cambio sin commitear garantiza un diff real que revisar.
 Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`ndef div(a, b):`n    return a / b  # marker_env_test`n"
 $rEnv = Invoke-CrossReviewWithFakeClaude -RepoPath $pyRepo -FakeCliDir $fakeCliDir
 Assert-True ($rEnv.Stdout -match 'CFG=UNSET') 'CLAUDE_CONFIG_DIR is stripped before claude runs (a relocated config cannot redirect the review to another account)' "stdout=$($rEnv.Stdout)"
 Assert-True ($rEnv.Stdout -match 'BASE=UNSET') 'ANTHROPIC_* is still stripped (regression guard on the behaviour that already worked)'
+Assert-True ($rEnv.Stdout -match 'OAUTH=UNSET') 'CLAUDE_CODE_OAUTH_TOKEN is stripped too -- the old CLAUDE_CODE_USE_ prefix left this credential door open (kimi cross-review 2026-08-03)'
 Assert-True ($rEnv.Stdout -match 'PROXY=SET') 'HTTPS_PROXY is deliberately NOT stripped -- a proxy is usually mandatory infrastructure, and clearing it would cut off legitimate network access'
 
 # ------------------------------------------------------------------

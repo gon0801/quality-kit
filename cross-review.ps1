@@ -11,11 +11,11 @@
 #
 # -Con auto: try the strongest available reviewer first and fall back down
 # the chain (claude -> kimi -> codex), skipping -Excluir (the AI that wrote
-# the change). claude is always invoked with ANTHROPIC_*, CLAUDE_CODE_USE_*
-# and CLAUDE_CONFIG_DIR env vars stripped, so env-var redirections (a
-# 'glm'-launched session, Bedrock/Vertex toggles, a relocated config tree
-# pointing at another account) cannot steer the review away from the real
-# Claude account (OAuth + the plan's default model).
+# the change). claude is always invoked with ANTHROPIC_*, CLAUDE_CODE_* and
+# CLAUDE_CONFIG_DIR env vars stripped, so env-var redirections (a
+# 'glm'-launched session, Bedrock/Vertex toggles, a relocated config tree,
+# an injected OAuth token or API-key helper) cannot steer the review away
+# from the real Claude account (OAuth + the plan's default model).
 #
 # Known, DELIBERATE limits of that stripping -- it is not a sandbox:
 #   - a fake 'claude' binary planted earlier on PATH (that is already a
@@ -533,7 +533,17 @@ try {
         # configuracion Y credenciales -- y escapaba a los dos prefijos de
         # arriba. Sin limpiarla, una sesion lanzada con ella puesta mandaba la
         # revision a otra cuenta sin que nadie se enterara.
-        if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_USE_', 'CLAUDE_CONFIG_DIR') }
+        # El prefijo se amplio de CLAUDE_CODE_USE_ a CLAUDE_CODE_ tras la
+        # revision cruzada de kimi (2026-08-03): CLAUDE_CODE_OAUTH_TOKEN y
+        # CLAUDE_CODE_API_KEY_HELPER son credenciales que la CLI reconoce
+        # (verificado en el binario) y que el prefijo viejo NO cubria -- el
+        # mismo vector que CLAUDE_CONFIG_DIR, por otra puerta. Cubrir el
+        # namespace entero tambien protege de las hermanas que agreguen
+        # despues. Se lleva de paso CLAUDE_CODE_ENTRYPOINT y las de sesion,
+        # que son informativas: una invocacion mas limpia, no una rota.
+        # XDG_CONFIG_HOME quedo FUERA a proposito: se probo en vivo y en
+        # Windows la CLI no la honra (no crea nada en la ruta indicada).
+        if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_', 'CLAUDE_CONFIG_DIR') }
 
         if ($DryRun) {
             Write-Host ''
