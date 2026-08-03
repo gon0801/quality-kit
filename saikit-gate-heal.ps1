@@ -11,7 +11,10 @@
 
   QUE HACE
   Inserta tres bloques marcados en summonaikit-harness.sh para que el harness solo
-  se arme si el prompt trae un sentinel explicito (-saikit o /harness-plan).
+  se arme si el prompt trae el sentinel explicito -saikit.
+
+  OJO: el sentinel es SOLO -saikit. /harness-plan pertenece al plugin
+  claude-code-harness, que es otro sistema distinto, y no debe despertar a este.
 
   POR QUE SE RE-APLICA EN CADA ARRANQUE
   `summonaikit install` / `/saikit-update` reescriben el hook desde cero y se
@@ -68,8 +71,10 @@ MAX_CYCLES=2
 # >>> SAIKIT-SENTINEL-GATE v1 (parche local, re-aplicado por quality-kit/saikit-gate-heal.ps1) >>>
 # El kit busca sus palabras clave como fragmentos, sin frontera de palabra, asi que
 # en espanol se arma solo ("cualquier" contiene ui, "codex" contiene code). Con este
-# parche el harness SOLO se arma si el prompt trae un sentinel explicito.
-SAIKIT_SENTINEL_RE='(^|[^A-Za-z0-9_])(-saikit|/harness-plan)([^A-Za-z0-9_-]|$)'
+# parche el harness SOLO se arma si el prompt trae el sentinel explicito.
+# El sentinel es unicamente -saikit: /harness-plan es del plugin claude-code-harness,
+# otro sistema, y no debe despertar a este kit.
+SAIKIT_SENTINEL_RE='(^|[^A-Za-z0-9_])-saikit([^A-Za-z0-9_-]|$)'
 # <<< SAIKIT-SENTINEL-GATE v1 <<<
 '@
 
