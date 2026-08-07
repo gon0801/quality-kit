@@ -7,3 +7,6 @@ my-owners.txt
 
 # Estado local de Claude Code (session logs, journals, __pycache__)
 .claude/
+
+# Salida generada por las corridas del kit.
+out/
