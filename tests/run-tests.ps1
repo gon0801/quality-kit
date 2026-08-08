@@ -988,6 +988,345 @@ Assert-True ($rHealDup.Stdout -match 'ANCLAS-CAMBIARON') 'the duplicated anchor 
 Assert-True ($rHealDup.Stdout -match 'A=2') 'the report names which anchor and how many times it appeared'
 Assert-True ($rHealDup.ExitCode -eq 0) 'even on a refused patch the script exits 0 -- it must never break a session start' "exit=$($rHealDup.ExitCode)"
 
+Write-Host ''
+Write-Host '=== TEST GROUP 3l: SAIKIT-REVIEW-ORDER v1 end-to-end -- drives a PATCHED COPY of the real installed hook exactly like Claude Code does (JSON on stdin, SUMMONAIKIT_HOOK_TARGET=claude, phase dispatched from hook_event_name) ==='
+# TEST GROUP 3k above only proves the ANCHOR TEXT matches -- its fixture is a
+# handful of lines with none of the vendor hook's real functions (write_state,
+# record_agent, mark_evidence, stop_gate...), so it cannot exercise the actual
+# gate BEHAVIOR this patch adds. These tests instead copy the REAL hooks
+# already installed at ~/.claude and ~/.codex (the two structurally distinct
+# variants -- .cursor and .agents are byte-identical to .claude, confirmed by
+# a plain file diff) into a throwaway fake home, patch ONLY the copies with
+# saikit-gate-heal.ps1, and run the patched copies for real. The live hooks
+# under the real ~/.claude, ~/.codex, ~/.cursor, ~/.agents are never written.
+function Get-BashExeForTests {
+    $viaPath = Get-Command bash -ErrorAction SilentlyContinue
+    if ($null -ne $viaPath) { return $viaPath.Source }
+    $fixedCandidates = @(
+        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+        (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+    )
+    foreach ($c in $fixedCandidates) {
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    return $null
+}
+$GateOrderBashExe = Get-BashExeForTests
+$LiveClaudeHookForTests = Join-Path $env:USERPROFILE '.claude\hooks\summonaikit-harness.sh'
+$LiveCodexHookForTests = Join-Path $env:USERPROFILE '.codex\hooks\summonaikit-harness.sh'
+
+if ($null -eq $GateOrderBashExe) {
+    Assert-True $false 'TEST GROUP 3l setup: found a real bash.exe on this machine (required to drive the hook the same way Claude Code does)' 'no bash.exe on PATH or at the fixed Git-for-Windows install paths'
+} elseif (-not (Test-Path -LiteralPath $LiveClaudeHookForTests) -or -not (Test-Path -LiteralPath $LiveCodexHookForTests)) {
+    Assert-True $false 'TEST GROUP 3l setup: the real SummonAI Kit hooks are installed at ~/.claude and ~/.codex (read-only base fixture for these tests)' "claude=$LiveClaudeHookForTests codex=$LiveCodexHookForTests"
+} else {
+    # Runs the hook with a JSON payload on stdin, the same contract Claude Code
+    # itself uses (SUMMONAIKIT_HOOK_TARGET selects the sequential-subagent
+    # enforcement branch; PHASE is left unset so the hook derives it from
+    # hook_event_name itself, exactly like a real invocation).
+    function Invoke-HarnessHook {
+        param([string]$HookPath, [string]$WorkingDirectory, [string]$Json)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $GateOrderBashExe
+        $psi.Arguments = '"' + $HookPath + '"'
+        $psi.WorkingDirectory = $WorkingDirectory
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        # Touch EnvironmentVariables once to lazily populate it from the real
+        # current environment (same trick as Invoke-ScriptCaptureWithoutBashOnPath
+        # above) before overriding the one var Claude Code itself sets.
+        $null = $psi.EnvironmentVariables['PATH']
+        $psi.EnvironmentVariables['SUMMONAIKIT_HOOK_TARGET'] = 'claude'
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        $proc.Start() | Out-Null
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $proc.StandardInput.Write($Json)
+        $proc.StandardInput.Close()
+        $proc.WaitForExit()
+        return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
+    }
+
+    function Start-HarnessTurn {
+        param([string]$HookPath, [string]$Dir)
+        Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json '{"hook_event_name":"UserPromptSubmit","prompt":"implement the thing -saikit"}' | Out-Null
+    }
+    function Add-HarnessSubagent {
+        param([string]$HookPath, [string]$Dir, [string]$Role)
+        $json = '{"hook_event_name":"PostToolUse","tool_name":"Task","subagent_type":"' + $Role + '"}'
+        Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json $json | Out-Null
+    }
+    function Add-HarnessEdit {
+        param([string]$HookPath, [string]$Dir, [string]$FilePath, [string]$Content = '')
+        # Also writes a REAL file on disk, not just the JSON notification --
+        # required since SAIKIT-REVIEW-ORDER v1's primary signal now reads the
+        # actual git working tree (compute_code_fingerprint), not the tool-name
+        # event alone. A real Edit/Write tool call always changes a real file
+        # first and THEN fires the PostToolUse event; this mirrors that.
+        $fullPath = Join-Path $Dir $FilePath
+        $parent = Split-Path -Path $fullPath -Parent
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        if ($Content -eq '') { $Content = "line-$([guid]::NewGuid().ToString('N'))`n" }
+        Write-Utf8NoBomFile -Path $fullPath -Content $Content
+        $json = '{"hook_event_name":"PostToolUse","tool_name":"Edit","file_path":"' + $FilePath + '"}'
+        Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json $json | Out-Null
+    }
+    function Invoke-RealBashCommand {
+        param([string]$Dir, [string]$Command)
+        # Runs a command for real inside the project dir, via the SAME bash the
+        # patched hook itself runs under -- this is what actually mutates a file
+        # on disk, the same real side effect a live "sed -i" from Claude Code's
+        # Bash tool would have. The hook is never told about this call directly;
+        # Add-HarnessBashCommand below sends the (separate) tool-event notice.
+        Push-Location -LiteralPath $Dir
+        try {
+            & $GateOrderBashExe -c $Command 2>&1 | Out-Null
+        } finally {
+            Pop-Location
+        }
+    }
+    function Add-HarnessBashCommand {
+        param([string]$HookPath, [string]$Dir, [string]$Command)
+        # Notifies the hook of a Bash tool call WITHOUT any file_path field --
+        # the exact evasion shape from the reproduced hueco ALTO: sed -i, a
+        # heredoc, "cat >", git apply/patch, mv, cp, or a script all run
+        # through Bash and carry neither tool_name in the old edit/write/...
+        # allowlist NOR a file_path, so the old signal (RO-E) never saw them.
+        $escaped = $Command.Replace('\', '\\').Replace('"', '\"')
+        $json = '{"hook_event_name":"PostToolUse","tool_name":"Bash","command":"' + $escaped + '"}'
+        Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json $json | Out-Null
+    }
+    function Get-HarnessOrderField {
+        param([string]$OrderPath, [string]$Key)
+        $raw = Read-TextFile -Path $OrderPath
+        if ($null -eq $raw) { return '' }
+        $line = @($raw -split "`n" | Where-Object { $_ -match "^$Key=" } | Select-Object -Last 1)
+        if ($line.Count -eq 0) { return '' }
+        return ($line[0] -replace "^$Key=", '')
+    }
+    # Fed as raw stdin, same as the SUMMONAIKIT HARNESS RECEIPT block a real
+    # agent turn ends with; "ran npm test" alone satisfies the Verify-evidence
+    # check via TEST_RUNNER_RE, so no separate tool call is needed for that gate.
+    $GateOrderReceipt = (@'
+{"hook_event_name":"Stop","transcript_path":""}
+SUMMONAIKIT HARNESS RECEIPT
+Understand: build the thing the user asked for
+Implement: changed the file
+Verify: ran npm test, all green
+Review: no findings
+Close: done, nothing pending
+Retro: none
+'@ -replace "`r`n", "`n")
+
+    # Lists the per-project state-key subdirectories that exist right now
+    # under a hook copy's own state root, so a scenario can diff before/after
+    # Start-HarnessTurn to find ITS key without reimplementing the hook's own
+    # cksum-based hashing in PowerShell.
+    function Get-HarnessStateKeys {
+        param([string]$StateRoot)
+        if (-not (Test-Path -LiteralPath $StateRoot)) { return @() }
+        return @(Get-ChildItem -LiteralPath $StateRoot -Directory | ForEach-Object { $_.Name })
+    }
+    function New-HarnessProject {
+        param([string]$HookPath, [string]$Name)
+        $dir = New-FakeGitRepo -Name $Name
+        $stateRoot = Join-Path (Split-Path -Path $HookPath -Parent) 'state'
+        $before = Get-HarnessStateKeys -StateRoot $stateRoot
+        Start-HarnessTurn -HookPath $HookPath -Dir $dir
+        $after = Get-HarnessStateKeys -StateRoot $stateRoot
+        $key = @($after | Where-Object { $before -notcontains $_ })[0]
+        return [PSCustomObject]@{
+            Dir        = $dir
+            OrderPath  = Join-Path $stateRoot (Join-Path $key 'harness-order.env')
+            StatePath  = Join-Path $stateRoot (Join-Path $key 'harness-state.env')
+            LogPath    = Join-Path $stateRoot (Join-Path $key 'harness-evidence.log')
+        }
+    }
+
+    # ---- setup: copy the REAL installed hooks (never touched themselves) into a throwaway fake home, patch the copies ----
+    $GateOrderHome = Join-Path $TestFixturesDir 'gate-order-home'
+    New-Item -ItemType Directory -Path (Join-Path $GateOrderHome '.claude\hooks') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $GateOrderHome '.codex\hooks') -Force | Out-Null
+    $ClaudeHookCopy = Join-Path $GateOrderHome '.claude\hooks\summonaikit-harness.sh'
+    $CodexHookCopy = Join-Path $GateOrderHome '.codex\hooks\summonaikit-harness.sh'
+    Copy-Item -LiteralPath $LiveClaudeHookForTests -Destination $ClaudeHookCopy -Force
+    Copy-Item -LiteralPath $LiveCodexHookForTests -Destination $CodexHookCopy -Force
+
+    $rGateOrder1 = Invoke-SaikitGateHeal -FakeHome $GateOrderHome
+    Assert-True ($rGateOrder1.Stdout -notmatch 'ANCLAS-CAMBIARON') 'setup: healing the hook copies reports NO ANCLAS-CAMBIARON on either variant -- regression guard for hueco 3: the .codex variant used to report this on EVERY run because its RO-C/RO-F anchors did not fit its -harness-lite branch and its ROLE FALLBACK text' "stdout=$($rGateOrder1.Stdout)"
+    $patchedClaude = Read-TextFile -Path $ClaudeHookCopy
+    $patchedCodex = Read-TextFile -Path $CodexHookCopy
+    Assert-True ($patchedClaude -match 'SAIKIT-REVIEW-ORDER v1') 'setup: the .claude copy carries the SAIKIT-REVIEW-ORDER v1 marker after healing'
+    Assert-True ($patchedCodex -match 'SAIKIT-REVIEW-ORDER v1') 'setup: the .codex copy ALSO carries the SAIKIT-REVIEW-ORDER v1 marker after healing -- the gate now protects Codex for real, not just a benign unsupported-variant message'
+    & $GateOrderBashExe -n $ClaudeHookCopy 2>&1 | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'setup: the patched .claude copy is still syntactically valid bash'
+    & $GateOrderBashExe -n $CodexHookCopy 2>&1 | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0) 'setup: the patched .codex copy is still syntactically valid bash'
+
+    Write-Host ''
+    Write-Host '--- (e) idempotency: applying saikit-gate-heal.ps1 a second time leaves both hook copies byte-identical ---'
+    $claudeAfter1st = Read-TextFile -Path $ClaudeHookCopy
+    $codexAfter1st = Read-TextFile -Path $CodexHookCopy
+    Invoke-SaikitGateHeal -FakeHome $GateOrderHome | Out-Null
+    $claudeAfter2nd = Read-TextFile -Path $ClaudeHookCopy
+    $codexAfter2nd = Read-TextFile -Path $CodexHookCopy
+    Assert-True ([string]::Equals($claudeAfter1st, $claudeAfter2nd, [System.StringComparison]::Ordinal)) '(e) a second saikit-gate-heal.ps1 run leaves the .claude hook byte-identical (idempotent)'
+    Assert-True ([string]::Equals($codexAfter1st, $codexAfter2nd, [System.StringComparison]::Ordinal)) '(e) a second saikit-gate-heal.ps1 run leaves the .codex hook byte-identical too (this is the variant whose anchors used to be broken every run)'
+
+    Write-Host ''
+    Write-Host '--- (a) implementer -> verifier -> reviewer -> edit code AGAIN via Bash (sed, no file_path) -> Stop: BLOCKS with the re-delegate-to-reviewer reason ---'
+    # This is the exact evasion an independent cross-review reproduced live: the
+    # OLD signal only recognized tool_name in (edit|write|multiedit|...) WITH a
+    # file_path -- a shell edit (sed -i, a heredoc, "cat >", git apply/patch,
+    # mv, cp, a script) carries neither, so it slipped straight through and the
+    # turn closed clean even though the reviewed code had already changed. The
+    # fix stopped inferring the edit from the tool's NAME and instead measures
+    # the real git working tree (compute_code_fingerprint), which is blind to
+    # which tool touched the file.
+    $projA = New-HarnessProject -HookPath $ClaudeHookCopy -Name 'gate-order-proj-a'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projA.Dir -Role 'implementer'
+    Add-HarnessEdit -HookPath $ClaudeHookCopy -Dir $projA.Dir -FilePath 'src/app.py' -Content "def add(a, b):`n    return a + b`n"
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projA.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projA.Dir -Role 'reviewer'
+    # THE EVASION: a real "sed -i" mutates the code file for real, reported to
+    # the hook as a plain Bash tool call with NO file_path at all.
+    $sedCommand = "sed -i 's/a + b/a + b + 1/' src/app.py"
+    Invoke-RealBashCommand -Dir $projA.Dir -Command $sedCommand
+    Add-HarnessBashCommand -HookPath $ClaudeHookCopy -Dir $projA.Dir -Command $sedCommand
+    $outA = Invoke-HarnessHook -HookPath $ClaudeHookCopy -WorkingDirectory $projA.Dir -Json $GateOrderReceipt
+    Assert-True ($outA.ExitCode -ne 0) '(a) the turn is BLOCKED (non-zero exit) when code is edited again after the reviewer already ran, even via a shell command that carries no file_path' "exit=$($outA.ExitCode)"
+    Assert-True ($outA.ExitCode -eq 2) '(a) the block uses exit code 2 (the hook''s own block-decision exit code), same as any other failed gate' "exit=$($outA.ExitCode)"
+    Assert-True (($outA.Stdout + $outA.Stderr) -match '(?i)edited after the last reviewer') '(a) the block reason names the reviewer-after-edit problem specifically' "stdout=$($outA.Stdout) stderr=$($outA.Stderr)"
+    Assert-True (Test-Path -LiteralPath $projA.OrderPath) '(a) the order-counter file is still there -- the turn was blocked, not closed, so nothing was cleaned up yet'
+    $lastCodeEditA = [int](Get-HarnessOrderField -OrderPath $projA.OrderPath -Key 'last_code_edit')
+    $lastReviewA = [int](Get-HarnessOrderField -OrderPath $projA.OrderPath -Key 'last_review')
+    Assert-True ($lastCodeEditA -le $lastReviewA) '(a) regression proof: the OLD tool-name counter alone would NOT have caught this edit (last_code_edit never advanced past last_review, because the Bash call carried no file_path) -- the block above came from the NEW git-tree fingerprint check, not a coincidence' "last_code_edit=$lastCodeEditA last_review=$lastReviewA"
+
+    Write-Host ''
+    Write-Host '--- (a2) recovery: after the fingerprint block, re-delegating to the reviewer records the post-edit tree and the same turn closes cleanly ---'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projA.Dir -Role 'reviewer'
+    $outA2 = Invoke-HarnessHook -HookPath $ClaudeHookCopy -WorkingDirectory $projA.Dir -Json $GateOrderReceipt
+    Assert-True ($outA2.ExitCode -eq 0) '(a2) after re-delegating to the reviewer (which re-captures the fingerprint of the now-current tree), the same turn closes cleanly on the next Stop' "exit=$($outA2.ExitCode) stdout=$($outA2.Stdout) stderr=$($outA2.Stderr)"
+    Assert-True (-not (($outA2.Stdout + $outA2.Stderr) -match '(?i)edited after the last reviewer')) '(a2) no reviewer-after-edit reason appears once the reviewer has re-run against the current tree'
+    Assert-True (-not (Test-Path -LiteralPath $projA.OrderPath)) '(a2) the second, clean close also removes the order-counter file -- recovery leaves no stale state behind'
+
+    Write-Host ''
+    Write-Host '--- (a3) MEDIO 1 fix: is_noncode_path in the ACTUAL patched hook correctly classifies Windows-style and mixed-case doc paths ---'
+    # Extracts the shipped is_noncode_path() function verbatim from the patched
+    # hook and runs it for real via bash, so this proves the function that will
+    # actually run in production, not a PowerShell reimplementation that could
+    # drift from it.
+    function Test-IsNoncodePathViaPatchedHook {
+        param([string]$HookPath, [string]$TestPath)
+        $hookText = Read-TextFile -Path $HookPath
+        if ($hookText -notmatch '(?ms)^is_noncode_path\(\)\s*\{.*?\n\}') {
+            throw 'could not locate is_noncode_path() in the patched hook'
+        }
+        $miniScript = $Matches[0] + "`nif is_noncode_path `"`$1`"; then echo NONCODE; else echo CODE; fi`n"
+        $miniPath = Join-Path $TestFixturesDir 'is-noncode-path-check.sh'
+        Write-Utf8NoBomFile -Path $miniPath -Content $miniScript
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $GateOrderBashExe
+        $psi.Arguments = '"' + $miniPath + '" "' + $TestPath + '"'
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        $proc.Start() | Out-Null
+        $out = $proc.StandardOutput.ReadToEnd()
+        $proc.WaitForExit()
+        return $out.Trim()
+    }
+    Assert-True ((Test-IsNoncodePathViaPatchedHook -HookPath $ClaudeHookCopy -TestPath 'docs\image.png') -eq 'NONCODE') '(a3) a backslash-separated docs path (docs\image.png, the real shape Windows tool events carry) is correctly excluded as documentation, not misclassified as code' "hook=$ClaudeHookCopy"
+    Assert-True ((Test-IsNoncodePathViaPatchedHook -HookPath $ClaudeHookCopy -TestPath 'README.Md') -eq 'NONCODE') '(a3) a mixed-case .Md extension is correctly excluded as documentation'
+    Assert-True ((Test-IsNoncodePathViaPatchedHook -HookPath $ClaudeHookCopy -TestPath 'notes.markdown') -eq 'NONCODE') '(a3) .markdown is now recognized as a documentation extension'
+    Assert-True ((Test-IsNoncodePathViaPatchedHook -HookPath $ClaudeHookCopy -TestPath 'src\app.py') -eq 'CODE') '(a3) sanity: a backslash-separated CODE path is still classified as code -- the normalization does not over-exclude'
+
+    Write-Host ''
+    Write-Host '--- (b) same flow, but the only edit after the reviewer touches a .md file: does NOT block ---'
+    $projB = New-HarnessProject -HookPath $ClaudeHookCopy -Name 'gate-order-proj-b'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projB.Dir -Role 'implementer'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projB.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projB.Dir -Role 'reviewer'
+    Add-HarnessEdit -HookPath $ClaudeHookCopy -Dir $projB.Dir -FilePath 'README.md'
+    $outB = Invoke-HarnessHook -HookPath $ClaudeHookCopy -WorkingDirectory $projB.Dir -Json $GateOrderReceipt
+    Assert-True ($outB.ExitCode -eq 0) '(b) the turn is NOT blocked when the only edit after the reviewer touches a doc file' "exit=$($outB.ExitCode) stdout=$($outB.Stdout) stderr=$($outB.Stderr)"
+    Assert-True (-not (($outB.Stdout + $outB.Stderr) -match '(?i)edited after the last reviewer')) '(b) no reviewer-after-edit reason appears for a doc-only edit'
+
+    Write-Host ''
+    Write-Host '--- (c) real happy path: implementer -> edit -> verifier -> reviewer -> full receipt, nothing edited after review: does NOT block ---'
+    $projC = New-HarnessProject -HookPath $ClaudeHookCopy -Name 'gate-order-proj-c'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projC.Dir -Role 'implementer'
+    Add-HarnessEdit -HookPath $ClaudeHookCopy -Dir $projC.Dir -FilePath 'src/app.py'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projC.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projC.Dir -Role 'reviewer'
+    Assert-True (Test-Path -LiteralPath $projC.OrderPath) '(c) sanity: the order-counter file exists before Stop runs'
+    $outC = Invoke-HarnessHook -HookPath $ClaudeHookCopy -WorkingDirectory $projC.Dir -Json $GateOrderReceipt
+    Assert-True ($outC.ExitCode -eq 0) '(c) the real implementer -> verifier -> reviewer happy path still passes with nothing edited after review' "exit=$($outC.ExitCode) stdout=$($outC.Stdout) stderr=$($outC.Stderr)"
+    Assert-True (-not (Test-Path -LiteralPath $projC.OrderPath)) '(c) hueco 2 fix: a clean Stop close also removes the order-counter file -- it must not linger on disk until the next turn' "orderPath=$($projC.OrderPath)"
+    Assert-True (-not (Test-Path -LiteralPath $projC.StatePath)) '(c) regression guard: a clean Stop close still removes the harness state file too (unchanged behaviour)'
+    Assert-True (-not (Test-Path -LiteralPath $projC.LogPath)) '(c) regression guard: a clean Stop close still removes the evidence log too (unchanged behaviour)'
+
+    Write-Host ''
+    Write-Host '--- (d) missing / corrupt / non-numeric order-counter file: NEVER blocks (fails open, all three variants) ---'
+    $projD1 = New-HarnessProject -HookPath $ClaudeHookCopy -Name 'gate-order-proj-d1'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD1.Dir -Role 'implementer'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD1.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD1.Dir -Role 'reviewer'
+    Add-HarnessEdit -HookPath $ClaudeHookCopy -Dir $projD1.Dir -FilePath 'src/app.py'
+    Assert-True (Test-Path -LiteralPath $projD1.OrderPath) '(d1) sanity: the order-counter file exists before we remove it'
+    Remove-Item -LiteralPath $projD1.OrderPath -Force
+    $outD1 = Invoke-HarnessHook -HookPath $ClaudeHookCopy -WorkingDirectory $projD1.Dir -Json $GateOrderReceipt
+    Assert-True ($outD1.ExitCode -eq 0) '(d1) with the order-counter file MISSING entirely, the same edit-after-review sequence does NOT block (fails open)' "exit=$($outD1.ExitCode) stdout=$($outD1.Stdout) stderr=$($outD1.Stderr)"
+    Assert-True (-not (($outD1.Stdout + $outD1.Stderr) -match '(?i)edited after the last reviewer')) '(d1) no reviewer-after-edit reason is raised when the order-counter file cannot be found'
+
+    $projD2 = New-HarnessProject -HookPath $ClaudeHookCopy -Name 'gate-order-proj-d2'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD2.Dir -Role 'implementer'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD2.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD2.Dir -Role 'reviewer'
+    Add-HarnessEdit -HookPath $ClaudeHookCopy -Dir $projD2.Dir -FilePath 'src/app.py'
+    Write-Utf8NoBomFile -Path $projD2.OrderPath -Content "this is not a key=value order file at all`n"
+    $outD2 = Invoke-HarnessHook -HookPath $ClaudeHookCopy -WorkingDirectory $projD2.Dir -Json $GateOrderReceipt
+    Assert-True ($outD2.ExitCode -eq 0) '(d2) with the order-counter file present but CORRUPT (no recognizable key=value lines), the same edit-after-review sequence does NOT block (fails open)' "exit=$($outD2.ExitCode) stdout=$($outD2.Stdout) stderr=$($outD2.Stderr)"
+    Assert-True (-not (($outD2.Stdout + $outD2.Stderr) -match '(?i)edited after the last reviewer')) '(d2) no reviewer-after-edit reason is raised when the order-counter file is corrupt'
+
+    $projD3 = New-HarnessProject -HookPath $ClaudeHookCopy -Name 'gate-order-proj-d3'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD3.Dir -Role 'implementer'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD3.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $ClaudeHookCopy -Dir $projD3.Dir -Role 'reviewer'
+    Add-HarnessEdit -HookPath $ClaudeHookCopy -Dir $projD3.Dir -FilePath 'src/app.py'
+    Write-Utf8NoBomFile -Path $projD3.OrderPath -Content "counter=abc`nlast_code_edit=xx`nlast_review=yy`n"
+    $outD3 = Invoke-HarnessHook -HookPath $ClaudeHookCopy -WorkingDirectory $projD3.Dir -Json $GateOrderReceipt
+    Assert-True ($outD3.ExitCode -eq 0) '(d3) with the order-counter file present but holding NON-NUMERIC values, the same edit-after-review sequence does NOT block (fails open)' "exit=$($outD3.ExitCode) stdout=$($outD3.Stdout) stderr=$($outD3.Stderr)"
+    Assert-True (-not (($outD3.Stdout + $outD3.Stderr) -match '(?i)edited after the last reviewer')) '(d3) no reviewer-after-edit reason is raised when the order-counter values are non-numeric'
+
+    Write-Host ''
+    Write-Host '--- hueco 3 regression, behavioral: the SAME (a) and (c) scenarios on the patched .codex copy, not just the anchor check ---'
+    $projCodexA = New-HarnessProject -HookPath $CodexHookCopy -Name 'gate-order-codex-a'
+    Add-HarnessSubagent -HookPath $CodexHookCopy -Dir $projCodexA.Dir -Role 'implementer'
+    Add-HarnessSubagent -HookPath $CodexHookCopy -Dir $projCodexA.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $CodexHookCopy -Dir $projCodexA.Dir -Role 'reviewer'
+    Add-HarnessEdit -HookPath $CodexHookCopy -Dir $projCodexA.Dir -FilePath 'src/app.py'
+    $outCodexA = Invoke-HarnessHook -HookPath $CodexHookCopy -WorkingDirectory $projCodexA.Dir -Json $GateOrderReceipt
+    Assert-True ($outCodexA.ExitCode -ne 0) 'codex variant (a): edit-after-review is BLOCKED on the .codex hook too, not just on .claude' "exit=$($outCodexA.ExitCode)"
+    Assert-True (($outCodexA.Stdout + $outCodexA.Stderr) -match '(?i)edited after the last reviewer') 'codex variant (a): the block reason names the reviewer-after-edit problem on .codex too'
+
+    $projCodexC = New-HarnessProject -HookPath $CodexHookCopy -Name 'gate-order-codex-c'
+    Add-HarnessSubagent -HookPath $CodexHookCopy -Dir $projCodexC.Dir -Role 'implementer'
+    Add-HarnessEdit -HookPath $CodexHookCopy -Dir $projCodexC.Dir -FilePath 'src/app.py'
+    Add-HarnessSubagent -HookPath $CodexHookCopy -Dir $projCodexC.Dir -Role 'verifier'
+    Add-HarnessSubagent -HookPath $CodexHookCopy -Dir $projCodexC.Dir -Role 'reviewer'
+    $outCodexC = Invoke-HarnessHook -HookPath $CodexHookCopy -WorkingDirectory $projCodexC.Dir -Json $GateOrderReceipt
+    Assert-True ($outCodexC.ExitCode -eq 0) 'codex variant (c): the real happy path still passes on .codex' "exit=$($outCodexC.ExitCode) stdout=$($outCodexC.Stdout) stderr=$($outCodexC.Stderr)"
+    Assert-True (-not (Test-Path -LiteralPath $projCodexC.OrderPath)) 'codex variant (c): hueco 2 fix also applies on .codex -- clean close removes the order-counter file there too'
+}
+
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE
 # home directories -- NEVER the real ~/.claude, ~/.codex, ~/.kimi-code.
