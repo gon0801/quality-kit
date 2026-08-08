@@ -23,10 +23,21 @@
   Este segundo parche es puramente ADVISORY: nunca bloquea, nunca agrega un exit
   code nuevo. Cuando el Stop gate detecta que hubo una edicion de codigo despues
   de la ultima corrida del reviewer (por nombre de herramienta, sin git, sin
-  lanzar un proceso por archivo) escribe una linea en harness-evidence.log que
-  declara su propia limitacion, y sigue de largo. Tambien agrega una linea al
-  contrato que el hook inyecta al armar el turno, para que el recibo final
-  (linea Close) tenga que declarar si se toco codigo despues del reviewer.
+  lanzar un proceso por archivo) hace tres cosas: (1) escribe una linea CON
+  TIMESTAMP en harness-evidence.log, de auditoria; (2) en el cierre limpio
+  emite el campo systemMessage del contrato de hooks de Claude Code, que se
+  muestra AL USUARIO al final del MISMO turno sin tocar la decision -- el
+  canal inmediato; y (3) guarda el aviso en su PROPIO archivo por PROYECTO
+  (no en harness-evidence.log, que start_harness reescribe con '>' al armar
+  el turno siguiente y lo perderia justo cuando hace falta mostrarlo). El
+  PROXIMO turno que se arme lee ese archivo, ANTEPONE el aviso al contrato
+  inyectado (el canal hookSpecificOutput/additionalContext que el hook ya usa
+  para el contrato -- additional_context en cursor) y lo borra en el momento,
+  para que no se repita en el turno de despues. Asi el aviso llega a la
+  conversacion real -- al usuario en el momento, y al modelo del proximo
+  turno armado -- no solo a un log que nadie lee. Tambien agrega una linea al
+  contrato en si, para que el recibo final (linea Close) tenga que declarar
+  si se toco codigo despues del reviewer.
   Ver el detalle en las anclas RN-* mas abajo.
 
   POR QUE SE RE-APLICA EN CADA ARRANQUE
@@ -155,36 +166,35 @@ record_tool_evidence() {
 # limitacion que eso implica (una edicion hecha por shell -- sed, un heredoc,
 # git apply -- no se ve) se declara por escrito en la linea que se agrega al
 # log de evidencia, no solo en este comentario.
+#
+# EL AVISO LLEGA A LA CONVERSACION, no solo al log (hallazgo ALTO 1 de la
+# revision cruzada, 2026-08-08): cuando el Stop gate detecta la secuencia
+# mala, guarda el aviso en su propio archivo (RN_PENDING_PATH, ver ancla
+# RN-A). El PROXIMO turno que se arme lo lee, lo antepone al contrato que
+# start_harness ya inyecta via hookSpecificOutput/additionalContext (o
+# additional_context en cursor -- el mismo canal, ancla RN-H) y lo borra en
+# el momento para que no se repita en el turno de despues.
 # ============================================================================
 
-# Ancla RN-A: la funcion write_state completa. Punto de insercion para el
-# contador y sus helpers -- se ubica antes de start_harness Y de
-# record_tool_evidence en el archivo pristino, asi que quedan definidos antes
-# de que cualquiera de las dos los use.
-$anchorRnA = ToLf @'
-write_state() {
-  task_hash="$1"
-  cycle="$2"
-  implemented="$3"
-  verified="$4"
-  agents_seen="$5"
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  {
-    printf 'task_hash=%s\n' "$task_hash"
-    printf 'cycle=%s\n' "$cycle"
-    printf 'implemented=%s\n' "$implemented"
-    printf 'verified=%s\n' "$verified"
-    printf 'agents_seen=%s\n' "$agents_seen"
-  } > "$STATE_PATH" 2>/dev/null || true
-}
-'@
+# Ancla RN-A (achicada -- MEDIO 1 de la revision cruzada, 2026-08-08): antes
+# usaba el CUERPO COMPLETO de write_state (13 lineas) solo como punto de
+# insercion, asi que un cambio del vendor a CUALQUIER detalle interno de esa
+# funcion (por ejemplo un sexto campo de estado) desarmaba el parche entero
+# -- las 7 anclas de este segundo parche se evaluan en grupo, asi que una
+# sola rota tumba a todas. Ahora es la sola linea de apertura, igual de unica
+# en el hook, mismo estilo que las anclas del sentinel (anchorA arriba). El
+# insert va ANTES de esa linea, no adentro: write_state en si queda
+# exactamente como la trae el vendor, sin depender de su cuerpo para nada.
+$anchorRnA = ToLf 'write_state() {'
 
 # Ancla RN-B: la linea que calcula task_hash al arrancar el turno en
 # start_harness. Se usa para resetear el contador de orden al inicio del
-# turno (STATE_DIR persiste entre turnos). Deliberadamente SOLO esta linea
-# (no mas contexto pegado): es identica byte a byte en las 4 variantes
-# instaladas (.claude/.codex/.cursor/.agents, confirmado), pese a que .codex
-# ramifica justo despues de ella (modo -harness-lite).
+# turno (STATE_DIR persiste entre turnos), y para leer + borrar el aviso
+# pendiente del turno anterior (RN_PENDING_PATH) apenas se puede, antes de
+# que nada mas en el turno lo toque. Deliberadamente SOLO esta linea (no mas
+# contexto pegado): es identica byte a byte en las 4 variantes instaladas
+# (.claude/.codex/.cursor/.agents, confirmado), pese a que .codex ramifica
+# justo despues de ella (modo -harness-lite).
 $anchorRnB = ToLf @'
   task_hash="$(printf '%s' "$prompt_text" | cksum | awk '{print $1}')"
 '@
@@ -211,10 +221,12 @@ $anchorRnD = ToLf @'
 
 # Ancla RN-E: la cola de cierre limpio del Stop gate (cuando ya no falta
 # nada). Se usa para (1) calcular el aviso ADVISORY justo antes -- nunca toca
-# $missing ni el exit code -- y (2) conservar el log de evidencia cuando el
-# aviso se disparo, para que la linea siga siendo legible despues de que el
-# proceso termine (por defecto el cierre limpio borra ese log igual que el
-# archivo de estado). Identica byte a byte en las 4 variantes instaladas.
+# $missing ni el exit code -- y (2), dentro del cierre limpio, borrar
+# tambien el contador de orden. Con el aviso viviendo en su propio archivo
+# (RN_PENDING_PATH) desde el momento en que se detecta, $LOG_PATH ya NO hace
+# falta conservarlo aca -- esta rama vuelve a ser la del vendor, sin
+# condicionales nuevos (menos divergencia). Identica byte a byte en las 4
+# variantes instaladas.
 $anchorRnE = ToLf @'
   if [ -z "$missing" ]; then
     rm -f "$STATE_PATH" "$LOG_PATH" 2>/dev/null || true
@@ -243,38 +255,55 @@ Close: evidence summary and remaining gaps.
 Retro: improvement note, or "none".
 '@
 
-$insertRnA = ToLf @'
-write_state() {
-  task_hash="$1"
-  cycle="$2"
-  implemented="$3"
-  verified="$4"
-  agents_seen="$5"
-  mkdir -p "$STATE_DIR" 2>/dev/null || true
-  {
-    printf 'task_hash=%s\n' "$task_hash"
-    printf 'cycle=%s\n' "$cycle"
-    printf 'implemented=%s\n' "$implemented"
-    printf 'verified=%s\n' "$verified"
-    printf 'agents_seen=%s\n' "$agents_seen"
-  } > "$STATE_PATH" 2>/dev/null || true
-}
+# Ancla RN-H (nueva -- ALTO 1 de la revision cruzada, 2026-08-08): la linea
+# que escapa el contrato ya armado, justo antes de emitirlo. Aparece
+# EXACTAMENTE una vez en las 4 variantes instaladas (verificado), identica
+# byte a byte pese a que .codex arma $context por dos caminos distintos
+# (harness_context / harness_context_lite) mas un bloque MODEL CHECK
+# opcional en el medio -- los tres caminos convergen en esta linea antes de
+# escapar, asi que anteponer el aviso pendiente justo aca cubre los tres sin
+# tener que anclar cada rama por separado.
+$anchorRnH = ToLf '  escaped="$(json_escape "$context")"'
 
+$insertRnA = ToLf @'
 # >>> SAIKIT-REVIEW-NOTICE v1 (parche local, re-aplicado por quality-kit/saikit-gate-heal.ps1) >>>
 # ADVISORY-ONLY, NUNCA bloquea el turno: el gate de ceremonia de arriba solo
 # comprueba que implementer/verifier/reviewer CORRIERON, no que el codigo
 # entregado sea el mismo que se reviso -- el lider podia correr los tres
-# subagentes y seguir editando despues, y eso quedaba invisible. Este parche
-# NO agrega motivos de bloqueo a $missing ni cambia ningun exit code: mas
-# abajo, en el Stop gate, solo ESCRIBE una linea en el log de evidencia
-# cuando detecta esa secuencia, y sigue de largo igual que si no existiera.
+# subagentes y seguir editando despues, y eso quedaba invisible sin este
+# parche. NO agrega motivos de bloqueo a $missing ni cambia ningun exit code.
+#
+# QUE HACE, en una frase: el Stop gate compara la ultima edicion de codigo
+# contra la ultima corrida del reviewer (por NOMBRE de herramienta, sin git,
+# sin lanzar un proceso por archivo -- limitacion declarada por escrito en la
+# propia linea de log). Si detecta la secuencia mala: (1) una linea CON
+# TIMESTAMP en harness-evidence.log, de auditoria; (2) el aviso se guarda en
+# su PROPIO archivo (RN_PENDING_PATH) porque $LOG_PATH lo reescribe
+# start_harness con '>' al armar el turno siguiente, y lo perderia justo
+# cuando hace falta mostrarlo. El PROXIMO turno que se arme (ancla RN-B) lee
+# ese archivo, lo antepone al contrato inyectado (ancla RN-H) y lo borra en
+# el momento, para que no se repita en el turno de despues.
 #
 # RN_ORDER_PATH se deriva de STATE_PATH (no de STATE_DIR a secas) para
 # heredar automaticamente cualquier sufijo de sesion que ya traiga (la
 # variante .codex reescribe STATE_PATH por sesion via resolve_state_paths,
 # ANTES de llegar aqui) -- sin esto, dos sesiones de Codex concurrentes en el
 # mismo proyecto compartirian un solo contador y se contaminarian entre si.
+#
+# RN_PENDING_PATH, en cambio, va por PROYECTO a proposito (STATE_DIR, sin
+# sufijo de sesion). Llavearlo por sesion perdia el aviso en silencio en la
+# variante .codex: el Stop lo escribia bajo la clave de SU sesion y el turno
+# siguiente (otra session_id -- otra corrida de la CLI, u otro id del host)
+# lo buscaba bajo otra clave y no lo encontraba jamas (fallo observado en la
+# bateria, codex NEW (a)). Por proyecto es seguro porque el contenido es una
+# CADENA CONSTANTE: dos sesiones concurrentes escribiendo a la vez escriben
+# bytes identicos, y que una sesion hermana del mismo proyecto vea el aviso
+# es informacion verdadera, no contaminacion. Borde aceptado y documentado:
+# el Stop de una sesion con secuencia limpia puede borrar el aviso pendiente
+# de otra (el elif de mas abajo) -- para una senal advisory, preferible a
+# perder la entrega entre sesiones.
 RN_ORDER_PATH="${STATE_PATH%.env}-review-notice.env"
+RN_PENDING_PATH="$STATE_DIR/review-notice-pending.log"
 
 rn_read_order() {
   rn_key="$1"
@@ -320,29 +349,64 @@ rn_mark_review() {
 }
 
 # Clasificacion codigo vs no-codigo para la senal de orden, deliberadamente
-# sesgada hacia "es codigo" (solo extensiones de texto/documentacion y una
-# carpeta docs/ quedan afuera). Normaliza separadores de Windows y mayusculas
+# sesgada hacia "es codigo". Normaliza separadores de Windows y mayusculas
 # ANTES de clasificar, para que una ruta real de Windows (docs\imagen.png) o
 # una extension en mayusculas (README.Md) no caigan del lado equivocado solo
 # por como vino escrita.
+#
+# MEDIO 2 de la revision cruzada (2026-08-08): se suman extensiones de
+# tracker/metadata (json/yaml/yml/toml) y lockfiles de dependencias -- pero
+# SOLO cuando el nombre del archivo es evidentemente eso: un tracker
+# (changelog/status/todo/tracker/version) o un lockfile real (cualquier
+# *.lock, mas los nombres fijos que no terminan en .lock como
+# package-lock.json). Deliberadamente NO se excluye json/yaml/toml en
+# general: ese es el riesgo concreto de una exclusion mas ancha -- un .json
+# de CONFIGURACION real (tsconfig.json, la config propia de una app) editado
+# despues de revisar tiene que seguir avisando, y una exclusion por extension
+# sola lo habria callado.
 rn_is_noncode_path() {
   rn_path="$1"
   rn_norm="$(printf '%s' "$rn_path" | tr 'A-Z\134' 'a-z/')"
+  rn_base="${rn_norm##*/}"
   case "$rn_norm" in
     *.md|*.txt|*.rst|*.adoc|*.markdown) return 0 ;;
     */docs/*|docs/*) return 0 ;;
+    *.lock) return 0 ;;
+  esac
+  case "$rn_base" in
+    package-lock.json|yarn.lock|pnpm-lock.yaml|composer.lock) return 0 ;;
+    changelog.json|changelog.yaml|changelog.yml) return 0 ;;
+    status.json|status.yaml|status.yml) return 0 ;;
+    todo.json|todo.yaml|todo.yml) return 0 ;;
+    *tracker*.json|*tracker*.yaml|*tracker*.yml|*tracker*.toml) return 0 ;;
+    version.json|version.yaml|version.yml) return 0 ;;
   esac
   return 1
 }
+
+# Lee el aviso pendiente del turno anterior (si lo hay) y lo BORRA en el
+# mismo paso, para que no se repita en el turno siguiente -- se llama desde
+# la ancla RN-B, lo antes posible dentro del camino armado, antes de que
+# nada mas lo toque. Fail-open: sin archivo, silencio.
+rn_take_pending() {
+  if [ ! -f "$RN_PENDING_PATH" ]; then return 0; fi
+  cat "$RN_PENDING_PATH" 2>/dev/null || true
+  rm -f "$RN_PENDING_PATH" 2>/dev/null || true
+}
 # <<< SAIKIT-REVIEW-NOTICE v1 <<<
+write_state() {
 '@
 
 $insertRnB = ToLf @'
   task_hash="$(printf '%s' "$prompt_text" | cksum | awk '{print $1}')"
   # >>> SAIKIT-REVIEW-NOTICE v1 >>>
   # Reinicia el contador de orden; STATE_DIR (y por lo tanto RN_ORDER_PATH)
-  # persiste entre turnos.
+  # persiste entre turnos. El aviso pendiente del turno anterior (si lo hay)
+  # se lee y se borra ACA, lo antes posible dentro del camino armado -- antes
+  # de que write_state, el log o el contrato hagan nada mas (ancla RN-H mas
+  # abajo antepone rn_pending_text al contrato ya armado).
   rm -f "$RN_ORDER_PATH" 2>/dev/null || true
+  rn_pending_text="$(rn_take_pending)"
   # <<< SAIKIT-REVIEW-NOTICE v1 <<<
 '@
 
@@ -382,34 +446,48 @@ $insertRnE = ToLf @'
   # >>> SAIKIT-REVIEW-NOTICE v1 >>>
   # Chequeo ADVISORY: compara el evento de la ultima edicion de codigo contra
   # el evento de la ultima corrida del reviewer. NUNCA agrega un motivo a
-  # $missing ni cambia el exit code -- solo escribe una linea en el log de
-  # evidencia cuando la secuencia se ve, y esa misma linea declara su propia
-  # limitacion. Postura de fallo: si el contador no existe, no se puede leer,
-  # o trae basura no numerica, NO se registra nada (nunca ruido, nunca
-  # bloqueo).
-  rn_notice_fired=""
+  # $missing ni cambia el exit code. Corre en CADA llamada al Stop gate (no
+  # solo en el cierre limpio), asi que un ciclo de revision (gate fallido, el
+  # agente sigue editando, Stop se llama de nuevo) siempre ve el estado MAS
+  # RECIENTE: si la secuencia mala ya no esta (por ejemplo corrio el reviewer
+  # de nuevo despues), el elif de abajo borra un aviso pendiente que hubiera
+  # quedado desactualizado de un intento anterior del mismo turno. Postura de
+  # fallo: si el contador no existe, no se puede leer, o trae basura no
+  # numerica (los dos campos vacios), NO se toca nada -- ni se escribe ni se
+  # borra (nunca ruido, nunca un falso "todo bien").
   rn_check_last_code_edit="$(rn_read_order last_code_edit)"
   rn_check_last_review="$(rn_read_order last_review)"
   case "$rn_check_last_code_edit" in ''|*[!0-9]*) rn_check_last_code_edit="" ;; esac
   case "$rn_check_last_review" in ''|*[!0-9]*) rn_check_last_review="" ;; esac
+  rn_notice_fired=""
   if [ -n "$rn_check_last_code_edit" ] && [ -n "$rn_check_last_review" ] && [ "$rn_check_last_code_edit" -gt "$rn_check_last_review" ] 2>/dev/null; then
-    printf 'review-notice: code was edited after the last reviewer subagent run (tool-name signal only -- an edit made via a shell command, e.g. sed/heredoc/git apply, is NOT detected by this check).\n' >> "$LOG_PATH" 2>/dev/null || true
+    rn_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+    printf '%s review-notice: code was edited after the last reviewer subagent run (tool-name signal only -- an edit made via a shell command, e.g. sed/heredoc/git apply, is NOT detected by this check).\n' "$rn_ts" >> "$LOG_PATH" 2>/dev/null || true
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    printf 'SAIKIT REVIEW NOTICE: in your previous turn, code was edited after the reviewer subagent last ran, and those edits were not reviewed.\n' > "$RN_PENDING_PATH" 2>/dev/null || true
     rn_notice_fired="1"
+  elif [ -n "$rn_check_last_code_edit" ] || [ -n "$rn_check_last_review" ]; then
+    rm -f "$RN_PENDING_PATH" 2>/dev/null || true
   fi
   # <<< SAIKIT-REVIEW-NOTICE v1 <<<
   if [ -z "$missing" ]; then
     # >>> SAIKIT-REVIEW-NOTICE v1 >>>
-    # El contador de orden se limpia siempre en un cierre limpio. El log de
-    # evidencia se conserva SOLO cuando el aviso se disparo, para que la
-    # linea de arriba siga siendo legible despues de que el proceso termine
-    # -- si no se disparo, el cierre borra ambos archivos igual que siempre.
     rm -f "$RN_ORDER_PATH" 2>/dev/null || true
-    if [ "$rn_notice_fired" = "1" ]; then
-      rm -f "$STATE_PATH" 2>/dev/null || true
-    else
-      rm -f "$STATE_PATH" "$LOG_PATH" 2>/dev/null || true
+    # Canal INMEDIATO (ademas del pendiente que lee el turno siguiente): en un
+    # cierre limpio donde el aviso disparo, se emite el campo systemMessage
+    # del contrato de hooks de Claude Code -- documentado como universal, se
+    # muestra AL USUARIO y no toca la decision (sin campo decision + exit 0 =
+    # allow igual que siempre). Asi el usuario se entera al final del MISMO
+    # turno, no recien cuando vuelva a armar -saikit en este proyecto. Solo
+    # target no-cursor, el mismo criterio que ya usa emit_gate_failure (el
+    # vendor emite JSON estilo Claude para todo lo que no es cursor). Si el
+    # host ignorase este stdout en exit 0, el peor caso es el silencio de hoy
+    # (fail-open); el pendiente del turno siguiente sigue existiendo igual.
+    if [ "$rn_notice_fired" = "1" ] && [ "$TARGET" != "cursor" ]; then
+      printf '{"systemMessage":"SAIKIT REVIEW NOTICE: code was edited after the reviewer subagent last ran in this turn; those edits were not re-reviewed. The next -saikit turn on this project will see this notice too. (Tool-name signal only -- edits made via shell commands are not detected.)"}\n'
     fi
     # <<< SAIKIT-REVIEW-NOTICE v1 <<<
+    rm -f "$STATE_PATH" "$LOG_PATH" 2>/dev/null || true
     emit_allow
   fi
 '@
@@ -422,6 +500,20 @@ Retro: harness/codebase-memory improvement, or "none".
 $insertRnG = ToLf @'
 Close: evidence summary and remaining gaps; state explicitly whether code was touched after the reviewer subagent last ran (yes/no).
 Retro: improvement note, or "none".
+'@
+
+$insertRnH = ToLf @'
+  # >>> SAIKIT-REVIEW-NOTICE v1 >>>
+  # Antepone el aviso pendiente del turno anterior (si lo hubo) al contrato
+  # recien armado. rn_pending_text se leyo y se borro mas arriba (ancla
+  # RN-B), antes de que nada mas lo tocara.
+  if [ -n "$rn_pending_text" ]; then
+    context="$rn_pending_text
+
+$context"
+  fi
+  # <<< SAIKIT-REVIEW-NOTICE v1 <<<
+  escaped="$(json_escape "$context")"
 '@
 
 # Aplica UN parche (marcador + set de anclas nombradas + inserts) sobre texto
@@ -491,6 +583,7 @@ $reviewNoticeCoreAnchors = @(
     @{ k = 'RN-D'; v = $anchorRnD; ins = $insertRnD }
     @{ k = 'RN-E'; v = $anchorRnE; ins = $insertRnE }
     @{ k = 'RN-F'; v = $anchorRnF; ins = $insertRnF }
+    @{ k = 'RN-H'; v = $anchorRnH; ins = $insertRnH }
 )
 
 $targets = @('.claude', '.codex', '.cursor', '.agents') |
