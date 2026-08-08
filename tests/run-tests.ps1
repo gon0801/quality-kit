@@ -988,6 +988,573 @@ Assert-True ($rHealDup.Stdout -match 'ANCLAS-CAMBIARON') 'the duplicated anchor 
 Assert-True ($rHealDup.Stdout -match 'A=2') 'the report names which anchor and how many times it appeared'
 Assert-True ($rHealDup.ExitCode -eq 0) 'even on a refused patch the script exits 0 -- it must never break a session start' "exit=$($rHealDup.ExitCode)"
 
+Write-Host ''
+Write-Host '=== TEST GROUP 3l: the two patches stay independent -- broken anchors in ONE never stop the OTHER from applying ==='
+# This is the property saikit-gate-heal.ps1's own header claims explicitly:
+# breaking SAIKIT-REVIEW-NOTICE v1's anchors must not disarm SAIKIT-SENTINEL-GATE
+# v1, and vice versa. Two synthetic fixtures, each missing/breaking ONE patch's
+# anchors while keeping the other's intact.
+#
+# ALTO 2 of the 2026-08-08 cross-review asked this group to use a versioned
+# fixture instead of the real installed hooks, same as TEST GROUP 3m below --
+# this group already does: both fixtures here are synthetic, embedded
+# here-strings, exactly like every other test in this file, with no
+# dependency on $env:USERPROFILE or on any kit variant being installed on the
+# machine running the suite. Nothing to change here; the fix for THIS group's
+# instance of the problem was already the norm the rest of the file follows.
+
+# Fixture 1: has the sentinel's three anchors (reuses $anchorBlock from TEST
+# GROUP 3k above) but NONE of the review-notice anchors (no write_state body,
+# no subagent-record block, etc.) -- sentinel should still patch cleanly.
+$healHomeNoRn = Join-Path $TestFixturesDir 'fake-home-heal-no-rn'
+New-Item -ItemType Directory -Path (Join-Path $healHomeNoRn '.claude\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeNoRn '.claude\hooks\summonaikit-harness.sh') -Content $anchorBlock
+$rHealNoRn = Invoke-SaikitGateHeal -FakeHome $healHomeNoRn
+$afterNoRn = Read-TextFile -Path (Join-Path $healHomeNoRn '.claude\hooks\summonaikit-harness.sh')
+Assert-True ($afterNoRn -match 'SAIKIT-SENTINEL-GATE') 'sentinel still patches a fixture that has its own anchors but none of review-notice''s' "content=$afterNoRn"
+Assert-True ($afterNoRn -notmatch 'SAIKIT-REVIEW-NOTICE') 'review-notice correctly did NOT apply to a fixture missing all its anchors (0 occurrences, not a false match)'
+Assert-True ($rHealNoRn.Stdout -match 'ANCLAS-CAMBIARON') 'the missing review-notice anchors are still reported (RN-A=0 etc), not silently ignored' "stdout=$($rHealNoRn.Stdout)"
+Assert-True ($rHealNoRn.ExitCode -eq 0) 'even with one patch refused, the script still exits 0' "exit=$($rHealNoRn.ExitCode)"
+
+# Fixture 2: the mirror case -- all six review-notice CORE anchors present and
+# intact, but the sentinel's own anchor is duplicated (broken). Review-notice
+# should still patch cleanly even though sentinel is refused.
+$rnOnlyFixture = @'
+#!/usr/bin/env bash
+MAX_CYCLES=2
+MAX_CYCLES=2
+
+write_state() {
+  task_hash="$1"
+  cycle="$2"
+  implemented="$3"
+  verified="$4"
+  agents_seen="$5"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  {
+    printf 'task_hash=%s\n' "$task_hash"
+    printf 'cycle=%s\n' "$cycle"
+    printf 'implemented=%s\n' "$implemented"
+    printf 'verified=%s\n' "$verified"
+    printf 'agents_seen=%s\n' "$agents_seen"
+  } > "$STATE_PATH" 2>/dev/null || true
+}
+
+start_harness() {
+  prompt_text="$(json_string_field prompt)"
+  if [ -z "$prompt_text" ]; then prompt_text="$INPUT"; fi
+  task_hash="$(printf '%s' "$prompt_text" | cksum | awk '{print $1}')"
+  write_state "$task_hash" "0" "0" "0" ""
+  context="$(harness_context)"
+  escaped="$(json_escape "$context")"
+  echo start
+}
+
+record_tool_evidence() {
+  event_name="$(json_string_field hook_event_name)"
+  subagent="$(json_string_field subagent_type)"
+  if [ -z "$subagent" ]; then subagent="$(json_string_field subagentType)"; fi
+  if [ -n "$subagent" ]; then record_agent "$subagent"; fi
+  if printf '%s' "$combined" | grep -Eiq 'afterFileEdit|Edit|Write|apply_patch|file_path|edits'; then
+    mark_evidence "implemented" "${file_path:-file edit}"
+  fi
+  echo tool
+}
+
+stop_gate() {
+  missing=""
+  if [ -z "$missing" ]; then
+    rm -f "$STATE_PATH" "$LOG_PATH" 2>/dev/null || true
+    emit_allow
+  fi
+}
+
+harness_context() {
+  cat <<'HARNESS_CONTEXT'
+SUMMONAIKIT HARNESS RECEIPT
+Understand: ...
+Implement: ...
+Verify: ...
+Review: ...
+Close: evidence summary and remaining gaps.
+Retro: harness/codebase-memory improvement, or "none".
+HARNESS_CONTEXT
+}
+'@
+$healHomeRnOnly = Join-Path $TestFixturesDir 'fake-home-heal-rn-only'
+New-Item -ItemType Directory -Path (Join-Path $healHomeRnOnly '.claude\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeRnOnly '.claude\hooks\summonaikit-harness.sh') -Content $rnOnlyFixture
+$rHealRnOnly = Invoke-SaikitGateHeal -FakeHome $healHomeRnOnly
+$afterRnOnly = Read-TextFile -Path (Join-Path $healHomeRnOnly '.claude\hooks\summonaikit-harness.sh')
+Assert-True ($afterRnOnly -match 'SAIKIT-REVIEW-NOTICE') 'review-notice still patches a fixture that has its own anchors intact but a broken sentinel anchor' "content=$afterRnOnly"
+Assert-True ($afterRnOnly -notmatch 'SAIKIT-SENTINEL-GATE') 'sentinel correctly did NOT apply to a fixture whose own anchor is duplicated'
+Assert-True ($rHealRnOnly.Stdout -match 'ANCLAS-CAMBIARON') 'the duplicated sentinel anchor (A=2) is still reported' "stdout=$($rHealRnOnly.Stdout)"
+Assert-True ($rHealRnOnly.ExitCode -eq 0) 'even with the other patch refused, the script still exits 0' "exit=$($rHealRnOnly.ExitCode)"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3m: SAIKIT-REVIEW-NOTICE v1 end-to-end -- drives a PATCHED COPY of a real-shaped hook exactly like Claude Code does (JSON on stdin, SUMMONAIKIT_HOOK_TARGET=claude, phase dispatched from hook_event_name) ==='
+# TEST GROUP 3l above only proves the ANCHOR TEXT matches -- its fixtures are a
+# handful of lines with none of the vendor hook's real functions (write_state,
+# record_agent, mark_evidence, stop_gate...), so they cannot exercise the actual
+# gate BEHAVIOR this patch adds. These tests instead drive full-shaped hooks
+# (.claude/.cursor/.agents structural shape, and the structurally distinct
+# .codex shape) for real.
+#
+# ALTO 2 of the 2026-08-08 cross-review: this group used to require the REAL
+# hooks installed at ~/.claude and ~/.codex as its ONLY fixture, and hard-failed
+# (Assert-True $false) when either was missing -- a machine with .claude but no
+# .codex (normal: nobody installed the Codex variant of the kit there) turned
+# the WHOLE group red for a reason unrelated to the code under test, and every
+# other test in this file uses a synthetic, versioned fixture instead. FIX:
+# two frozen, version-controlled copies of a real vendor hook -- the
+# .claude/.cursor/.agents structural shape and the .codex structural shape --
+# live under tests\fixtures\vendor-hooks\ and are the PRIMARY fixture this
+# group always drives, on ANY machine, with or without either kit variant
+# installed. The hooks ACTUALLY installed on this machine (if any) are still
+# exercised too, as an OPPORTUNISTIC bonus pass (catches the frozen fixtures
+# drifting from a real SummonAI Kit update) -- but missing them now only SKIPS
+# that bonus pass with a warning, it never fails the suite. Neither pass ever
+# writes to the real ~/.claude, ~/.codex, ~/.cursor, ~/.agents -- both copy
+# their hook source into a throwaway fake home first.
+$FixturesVendorHooksDir = Join-Path $QualityKitDir 'tests\fixtures\vendor-hooks'
+$FrozenClaudeHook = Join-Path $FixturesVendorHooksDir 'summonaikit-harness.claude.sh'
+$FrozenCodexHook = Join-Path $FixturesVendorHooksDir 'summonaikit-harness.codex.sh'
+Assert-True (Test-Path -LiteralPath $FrozenClaudeHook) 'setup: the frozen .claude-shape vendor hook fixture is present in the repo (tests\fixtures\vendor-hooks)' "path=$FrozenClaudeHook"
+Assert-True (Test-Path -LiteralPath $FrozenCodexHook) 'setup: the frozen .codex-shape vendor hook fixture is present in the repo (tests\fixtures\vendor-hooks)' "path=$FrozenCodexHook"
+
+# HARD REQUIREMENT under test (the whole point of this patch being
+# advisory-only): NOT ONE scenario below may ever produce exit code 2. Every
+# Invoke-HarnessHook Stop call made in this test group is collected into
+# $script:RnStopExitCodes so a single assertion at the end can check all of
+# them at once, in addition to each scenario's own per-case exit-code check.
+$script:RnStopExitCodes = @()
+
+function Get-BashExeForTests {
+    $viaPath = Get-Command bash -ErrorAction SilentlyContinue
+    if ($null -ne $viaPath) { return $viaPath.Source }
+    $fixedCandidates = @(
+        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+        (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+    )
+    foreach ($c in $fixedCandidates) {
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    return $null
+}
+$RnBashExe = Get-BashExeForTests
+$LiveClaudeHookForRnTests = Join-Path $env:USERPROFILE '.claude\hooks\summonaikit-harness.sh'
+$LiveCodexHookForRnTests = Join-Path $env:USERPROFILE '.codex\hooks\summonaikit-harness.sh'
+
+if ($null -eq $RnBashExe) {
+    # This is a genuine missing TOOL prerequisite (same tier as git, which the
+    # whole suite already assumes throughout) -- not a "did you install this
+    # optional kit variant" machine-variance issue, so it stays a hard failure.
+    Assert-True $false 'TEST GROUP 3m setup: found a real bash.exe on this machine (required to drive the hook the same way Claude Code does)' 'no bash.exe on PATH or at the fixed Git-for-Windows install paths'
+} else {
+    # Runs the hook with a JSON payload on stdin, the same contract Claude Code
+    # itself uses (SUMMONAIKIT_HOOK_TARGET selects the sequential-subagent
+    # enforcement branch; PHASE is left unset so the hook derives it from
+    # hook_event_name itself, exactly like a real invocation).
+    function Invoke-HarnessHook {
+        param([string]$HookPath, [string]$WorkingDirectory, [string]$Json)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $RnBashExe
+        $psi.Arguments = '"' + $HookPath + '"'
+        $psi.WorkingDirectory = $WorkingDirectory
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        # Touch EnvironmentVariables once to lazily populate it from the real
+        # current environment (same trick as Invoke-ScriptCaptureWithoutBashOnPath
+        # above) before overriding the one var Claude Code itself sets.
+        $null = $psi.EnvironmentVariables['PATH']
+        $psi.EnvironmentVariables['SUMMONAIKIT_HOOK_TARGET'] = 'claude'
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        $proc.Start() | Out-Null
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $proc.StandardInput.Write($Json)
+        $proc.StandardInput.Close()
+        $proc.WaitForExit()
+        return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
+    }
+
+    function Start-HarnessTurn {
+        param([string]$HookPath, [string]$Dir)
+        return (Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json '{"hook_event_name":"UserPromptSubmit","prompt":"implement the thing -saikit"}')
+    }
+    function Add-HarnessSubagent {
+        param([string]$HookPath, [string]$Dir, [string]$Role)
+        $json = '{"hook_event_name":"PostToolUse","tool_name":"Task","subagent_type":"' + $Role + '"}'
+        Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json $json | Out-Null
+    }
+    function Add-HarnessEdit {
+        param([string]$HookPath, [string]$Dir, [string]$FilePath, [string]$Content = '')
+        # Also writes a REAL file on disk, not just the JSON notification -- an
+        # actual Edit/Write tool call always changes a real file first and THEN
+        # fires the PostToolUse event; this mirrors that (the hook itself never
+        # reads the file's content, only the event's tool_name/file_path, but a
+        # real project directory with real files is a closer approximation of
+        # production than a bare JSON stream).
+        $fullPath = Join-Path $Dir $FilePath
+        $parent = Split-Path -Path $fullPath -Parent
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        if ($Content -eq '') { $Content = "line-$([guid]::NewGuid().ToString('N'))`n" }
+        Write-Utf8NoBomFile -Path $fullPath -Content $Content
+        $json = '{"hook_event_name":"PostToolUse","tool_name":"Edit","file_path":"' + $FilePath + '"}'
+        Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json $json | Out-Null
+    }
+    # Lists the per-project state-key subdirectories that exist right now
+    # under a hook copy's own state root, so a scenario can diff before/after
+    # Start-HarnessTurn to find ITS key without reimplementing the hook's own
+    # cksum-based hashing in PowerShell.
+    function Get-HarnessStateKeys {
+        param([string]$StateRoot)
+        if (-not (Test-Path -LiteralPath $StateRoot)) { return @() }
+        return @(Get-ChildItem -LiteralPath $StateRoot -Directory | ForEach-Object { $_.Name })
+    }
+    function New-HarnessProject {
+        param([string]$HookPath, [string]$Name)
+        $dir = New-FakeGitRepo -Name $Name
+        $stateRoot = Join-Path (Split-Path -Path $HookPath -Parent) 'state'
+        $before = Get-HarnessStateKeys -StateRoot $stateRoot
+        $startResult = Start-HarnessTurn -HookPath $HookPath -Dir $dir
+        $script:RnStopExitCodes += $startResult.ExitCode
+        $after = Get-HarnessStateKeys -StateRoot $stateRoot
+        $key = @($after | Where-Object { $before -notcontains $_ })[0]
+        return [PSCustomObject]@{
+            Dir         = $dir
+            StatePath   = Join-Path $stateRoot (Join-Path $key 'harness-state.env')
+            LogPath     = Join-Path $stateRoot (Join-Path $key 'harness-evidence.log')
+            OrderPath   = Join-Path $stateRoot (Join-Path $key 'harness-state-review-notice.env')
+            # El pendiente va por PROYECTO (STATE_DIR), no por sesion: asi lo
+            # entrega tambien a una sesion distinta de la que lo escribio (el
+            # bug real observado en la variante .codex, que llavea el estado
+            # por session_id).
+            PendingPath = Join-Path $stateRoot (Join-Path $key 'review-notice-pending.log')
+            FirstStart  = $startResult
+        }
+    }
+    # Fed as raw stdin, same as the SUMMONAIKIT HARNESS RECEIPT block a real
+    # agent turn ends with; "ran npm test" alone satisfies the Verify-evidence
+    # check via TEST_RUNNER_RE, so no separate tool call is needed for that gate.
+    $RnReceipt = (@'
+{"hook_event_name":"Stop","transcript_path":""}
+SUMMONAIKIT HARNESS RECEIPT
+Understand: build the thing the user asked for
+Implement: changed the file
+Verify: ran npm test, all green
+Review: no findings
+Close: done, nothing pending
+Retro: none
+'@ -replace "`r`n", "`n")
+
+    # Runs the FULL SAIKIT-REVIEW-NOTICE v1 behavior suite against ONE pair of
+    # hook sources (either the frozen fixtures or a real installed pair),
+    # copied into their own throwaway home keyed by $Label so two passes
+    # (frozen + live) never collide on the same project directories or state
+    # roots.
+    function Invoke-ReviewNoticeScenarios {
+        param([string]$ClaudeHookSource, [string]$CodexHookSource, [string]$Label)
+
+        $slug = ($Label -replace '[^A-Za-z0-9]+', '-').Trim('-').ToLower()
+        $rnHome = Join-Path $TestFixturesDir "review-notice-home-$slug"
+        New-Item -ItemType Directory -Path (Join-Path $rnHome '.claude\hooks') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $rnHome '.codex\hooks') -Force | Out-Null
+        $claudeHook = Join-Path $rnHome '.claude\hooks\summonaikit-harness.sh'
+        $codexHook = Join-Path $rnHome '.codex\hooks\summonaikit-harness.sh'
+        Copy-Item -LiteralPath $ClaudeHookSource -Destination $claudeHook -Force
+        Copy-Item -LiteralPath $CodexHookSource -Destination $codexHook -Force
+
+        $heal1 = Invoke-SaikitGateHeal -FakeHome $rnHome
+        Assert-True ($heal1.Stdout -notmatch 'ANCLAS-CAMBIARON') "[$Label] setup: healing the hook copies reports NO ANCLAS-CAMBIARON on either variant -- regression guard: the .codex variant is structurally different (harness_context_lite, resolve_state_paths, ROLE FALLBACK branches) and its anchors could silently stop fitting on a kit update" "stdout=$($heal1.Stdout)"
+        $patchedClaudeRn = Read-TextFile -Path $claudeHook
+        $patchedCodexRn = Read-TextFile -Path $codexHook
+        Assert-True ($patchedClaudeRn -match 'SAIKIT-REVIEW-NOTICE v1') "[$Label] setup: the .claude copy carries the SAIKIT-REVIEW-NOTICE v1 marker after healing"
+        Assert-True ($patchedCodexRn -match 'SAIKIT-REVIEW-NOTICE v1') "[$Label] setup: the .codex copy ALSO carries the SAIKIT-REVIEW-NOTICE v1 marker after healing"
+        & $RnBashExe -n $claudeHook 2>&1 | Out-Null
+        Assert-True ($LASTEXITCODE -eq 0) "[$Label] setup: the patched .claude copy is still syntactically valid bash"
+        & $RnBashExe -n $codexHook 2>&1 | Out-Null
+        Assert-True ($LASTEXITCODE -eq 0) "[$Label] setup: the patched .codex copy is still syntactically valid bash"
+
+        Write-Host ''
+        Write-Host "--- [$Label] idempotency: applying saikit-gate-heal.ps1 a second time leaves both hook copies byte-identical ---"
+        $claudeAfter1st = Read-TextFile -Path $claudeHook
+        $codexAfter1st = Read-TextFile -Path $codexHook
+        Invoke-SaikitGateHeal -FakeHome $rnHome | Out-Null
+        $claudeAfter2nd = Read-TextFile -Path $claudeHook
+        $codexAfter2nd = Read-TextFile -Path $codexHook
+        Assert-True ([string]::Equals($claudeAfter1st, $claudeAfter2nd, [System.StringComparison]::Ordinal)) "[$Label] a second saikit-gate-heal.ps1 run leaves the .claude hook byte-identical (idempotent)"
+        Assert-True ([string]::Equals($codexAfter1st, $codexAfter2nd, [System.StringComparison]::Ordinal)) "[$Label] a second saikit-gate-heal.ps1 run leaves the .codex hook byte-identical too"
+
+        Write-Host ''
+        Write-Host "--- [$Label] the contract this hook injects at turn start requires the Close line to declare whether code was touched after the reviewer ran ---"
+        $contractProj = New-FakeGitRepo -Name "review-notice-$slug-contract-proj"
+        $contractOut = Start-HarnessTurn -HookPath $claudeHook -Dir $contractProj
+        $script:RnStopExitCodes += $contractOut.ExitCode
+        Assert-True ($contractOut.ExitCode -eq 0) "[$Label] starting a turn (UserPromptSubmit) never blocks" "exit=$($contractOut.ExitCode)"
+        Assert-True (($contractOut.Stdout) -match 'state explicitly whether code was touched after the reviewer subagent last ran') "[$Label] the injected contract's Close line requires declaring whether code was touched after the reviewer ran" "stdout=$($contractOut.Stdout)"
+        # Regression guard for the anchor-selection risk called out for .codex: the
+        # SAME check on the .codex copy must ALSO be reachable through its OWN
+        # contract text (harness_context on the regular path) -- a separate check
+        # against harness_context_lite specifically follows further below.
+        $contractProjCodex = New-FakeGitRepo -Name "review-notice-$slug-contract-proj-codex"
+        $contractOutCodex = Invoke-HarnessHook -HookPath $codexHook -WorkingDirectory $contractProjCodex -Json '{"hook_event_name":"UserPromptSubmit","prompt":"implement the thing -saikit","session_id":"contract-sess"}'
+        $script:RnStopExitCodes += $contractOutCodex.ExitCode
+        Assert-True ($contractOutCodex.ExitCode -eq 0) "[$Label] codex variant: starting a turn never blocks either" "exit=$($contractOutCodex.ExitCode)"
+        Assert-True (($contractOutCodex.Stdout) -match 'state explicitly whether code was touched after the reviewer subagent last ran') "[$Label] codex variant: the regular (non-lite) injected contract also requires the Close declaration" "stdout=$($contractOutCodex.Stdout)"
+        $contractOutCodexLite = Invoke-HarnessHook -HookPath $codexHook -WorkingDirectory $contractProjCodex -Json '{"hook_event_name":"UserPromptSubmit","prompt":"implement the thing -saikit -harness-lite","session_id":"contract-sess-lite"}'
+        $script:RnStopExitCodes += $contractOutCodexLite.ExitCode
+        Assert-True ($contractOutCodexLite.ExitCode -eq 0) "[$Label] codex variant: starting a -harness-lite turn never blocks" "exit=$($contractOutCodexLite.ExitCode)"
+        Assert-True (($contractOutCodexLite.Stdout) -match 'state explicitly whether code was touched after the reviewer subagent last ran') "[$Label] codex variant: the LITE contract (harness_context_lite, a separate anchor from the regular one) ALSO requires the Close declaration" "stdout=$($contractOutCodexLite.Stdout)"
+
+        Write-Host ''
+        Write-Host "--- [$Label] (a) implementer -> edit -> verifier -> reviewer -> edit AGAIN -> Stop: the notice line lands in the evidence log AND the turn is NOT blocked (exit 0) ---"
+        $projA = New-HarnessProject -HookPath $claudeHook -Name "review-notice-$slug-proj-a"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projA.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projA.Dir -FilePath 'src/app.py' -Content "def add(a, b):`n    return a + b`n"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projA.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projA.Dir -Role 'reviewer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projA.Dir -FilePath 'src/app.py' -Content "def add(a, b):`n    return a + b + 1`n"
+
+        # Probe: an INCOMPLETE Stop call (bare event, no receipt at all) still
+        # runs the review-notice check -- it runs on EVERY Stop call, not only
+        # a clean close -- while leaving the evidence log in place long enough
+        # to inspect it. MEDIO fix (RN-E): the log is now ALWAYS removed on a
+        # clean close, same as the original vendor behaviour, so this probe is
+        # the only way to observe the timestamped audit line from outside the
+        # hook process. Its exit code is intentionally kept OUT of
+        # $script:RnStopExitCodes: it fails the PRE-EXISTING ceremony gate for
+        # an unrelated reason (no receipt at all), which has nothing to do
+        # with review-notice and must not be mistaken for a review-notice block.
+        $probeA = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projA.Dir -Json '{"hook_event_name":"Stop","transcript_path":""}'
+        Assert-True ($probeA.ExitCode -ne 0) "[$Label] (a) sanity: the probe Stop call (no receipt at all) correctly fails the PRE-EXISTING ceremony gate -- confirms the log inspected next has not already been cleaned up by a clean close" "exit=$($probeA.ExitCode)"
+        Assert-True (Test-Path -LiteralPath $projA.LogPath) "[$Label] (a) the evidence log exists while the gate is still open (before any clean close could remove it)"
+        $logContentA = Read-TextFile -Path $projA.LogPath
+        Assert-True ($logContentA -match 'review-notice: code was edited after the last reviewer subagent run') "[$Label] (a) the evidence log carries the review-notice line" "log=$logContentA"
+        Assert-True ($logContentA -match '(?i)tool-name signal only') "[$Label] (a) the logged line itself declares its own limitation (not just a code comment) -- it is what a human reading the log actually sees" "log=$logContentA"
+        Assert-True ($logContentA -match '(?i)sed|heredoc|git apply') "[$Label] (a) the logged limitation names the concrete evasion it cannot see (a shell edit), not just a vague caveat" "log=$logContentA"
+        Assert-True ($logContentA -match '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z review-notice:') "[$Label] ALTO 1 regression guard: the logged line carries an ISO-8601 UTC timestamp, so a stale notice can be told apart from a fresh one" "log=$logContentA"
+
+        # The REAL close: send the full receipt now.
+        $outA = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projA.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outA.ExitCode
+        Assert-True ($outA.ExitCode -eq 0) "[$Label] (a) the turn is NOT blocked even though code was edited again after the reviewer ran -- this patch is advisory-only" "exit=$($outA.ExitCode) stdout=$($outA.Stdout) stderr=$($outA.Stderr)"
+        Assert-True (($outA.Stdout) -match '"systemMessage"') "[$Label] (a) IMMEDIATE channel: the clean close emits a systemMessage JSON so the USER sees the notice at the end of the SAME turn, not only when the next -saikit turn arms" "stdout=$($outA.Stdout)"
+        Assert-True (($outA.Stdout) -match 'SAIKIT REVIEW NOTICE') "[$Label] (a) the systemMessage carries the actual notice text" "stdout=$($outA.Stdout)"
+        Assert-True (($outA.Stdout) -notmatch '"decision"') "[$Label] (a) the systemMessage JSON carries NO decision field -- it can inform but structurally cannot block" "stdout=$($outA.Stdout)"
+        Assert-True (-not (Test-Path -LiteralPath $projA.LogPath)) "[$Label] (a) MEDIO regression guard: the evidence log IS removed on the clean close, exactly like before this patch -- the audit trail already landed in the timestamped line above, and the pending notice (checked next) now lives in its own file, so the log no longer needs special preservation"
+        Assert-True (-not (Test-Path -LiteralPath $projA.StatePath)) "[$Label] (a) the harness state file is still removed on a clean close, same as before this patch"
+        Assert-True (-not (Test-Path -LiteralPath $projA.OrderPath)) "[$Label] (a) the order-counter file is removed on a clean close too -- no orphaned state left behind"
+        Assert-True (Test-Path -LiteralPath $projA.PendingPath) "[$Label] ALTO 1 (a) NEW: the pending-notice file DOES survive the clean close -- this is the channel the next turn reads from"
+        $pendingContentA = Read-TextFile -Path $projA.PendingPath
+        Assert-True ($pendingContentA -match 'SAIKIT REVIEW NOTICE: in your previous turn, code was edited after the reviewer subagent last ran, and those edits were not reviewed') "[$Label] ALTO 1 (a) NEW: the pending-notice file's content is exactly the text the next turn will inject" "pending=$pendingContentA"
+
+        Write-Host ''
+        Write-Host "--- [$Label] ALTO 1 (new): the pending notice from the previous turn is INJECTED into the NEXT turn's contract, then clears itself ---"
+        # NEW (a): the very next turn built on the SAME project must see the
+        # notice prepended to the injected contract text.
+        $projANextTurn = Start-HarnessTurn -HookPath $claudeHook -Dir $projA.Dir
+        $script:RnStopExitCodes += $projANextTurn.ExitCode
+        Assert-True ($projANextTurn.ExitCode -eq 0) "[$Label] NEW (a) starting the following turn on the same project never blocks" "exit=$($projANextTurn.ExitCode)"
+        Assert-True (($projANextTurn.Stdout) -match 'SAIKIT REVIEW NOTICE: in your previous turn, code was edited after the reviewer subagent last ran, and those edits were not reviewed') "[$Label] NEW (a) the pending notice from the previous turn appears in the text injected when the following turn is built" "stdout=$($projANextTurn.Stdout)"
+        Assert-True (-not (Test-Path -LiteralPath $projA.PendingPath)) "[$Label] NEW (a) the pending-notice file is consumed (deleted) the moment it is injected"
+
+        # NEW (b): a further turn (after the notice already fired once) must
+        # NOT see it again -- it was consumed, not just read.
+        $projANextTurn2 = Start-HarnessTurn -HookPath $claudeHook -Dir $projA.Dir
+        $script:RnStopExitCodes += $projANextTurn2.ExitCode
+        Assert-True ($projANextTurn2.ExitCode -eq 0) "[$Label] NEW (b) a further turn after the notice already fired once never blocks" "exit=$($projANextTurn2.ExitCode)"
+        Assert-True (($projANextTurn2.Stdout) -notmatch 'SAIKIT REVIEW NOTICE') "[$Label] NEW (b) the pending notice does NOT repeat on a turn after the one that already showed it" "stdout=$($projANextTurn2.Stdout)"
+
+        Write-Host ''
+        Write-Host "--- [$Label] (b) real happy path: implementer -> edit -> verifier -> reviewer -> full receipt, nothing edited after review: no notice, not blocked ---"
+        $projB = New-HarnessProject -HookPath $claudeHook -Name "review-notice-$slug-proj-b"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projB.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projB.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projB.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projB.Dir -Role 'reviewer'
+        $outB = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projB.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outB.ExitCode
+        Assert-True ($outB.ExitCode -eq 0) "[$Label] (b) the real happy path (nothing edited after review) is not blocked" "exit=$($outB.ExitCode) stdout=$($outB.Stdout) stderr=$($outB.Stderr)"
+        Assert-True (($outB.Stdout) -notmatch 'systemMessage') "[$Label] (b) no notice fired, so the clean close emits NO systemMessage -- zero noise on the happy path, byte-identical to the vendor's silent allow" "stdout=$($outB.Stdout)"
+        Assert-True (-not (Test-Path -LiteralPath $projB.LogPath)) "[$Label] (b) no notice fired, so the evidence log is removed on close exactly like before this patch (unchanged default behaviour)"
+        Assert-True (-not (Test-Path -LiteralPath $projB.StatePath)) "[$Label] (b) regression guard: the harness state file is still removed on a clean close"
+        Assert-True (-not (Test-Path -LiteralPath $projB.PendingPath)) "[$Label] (b) regression guard: no pending-notice file was ever written on the happy path"
+
+        Write-Host ''
+        Write-Host "--- [$Label] NEW (c): with no pending notice, the NEXT turn's injected text is EXACTLY what it was before this feature -- no extra prefix, no noise ---"
+        $projBNextTurn = Start-HarnessTurn -HookPath $claudeHook -Dir $projB.Dir
+        $script:RnStopExitCodes += $projBNextTurn.ExitCode
+        Assert-True ($projBNextTurn.ExitCode -eq 0) "[$Label] NEW (c) starting the following turn after a clean happy path never blocks" "exit=$($projBNextTurn.ExitCode)"
+        Assert-True (($projBNextTurn.Stdout) -notmatch 'SAIKIT REVIEW NOTICE') "[$Label] NEW (c) no stray notice appears when none was pending" "stdout=$($projBNextTurn.Stdout)"
+        $projBNextCtx = ($projBNextTurn.Stdout | ConvertFrom-Json).hookSpecificOutput.additionalContext
+        $projAFirstCtx = ($projA.FirstStart.Stdout | ConvertFrom-Json).hookSpecificOutput.additionalContext
+        Assert-True ([string]::Equals($projBNextCtx, $projAFirstCtx, [System.StringComparison]::Ordinal)) "[$Label] NEW (c) the injected contract text (no pending notice, on two unrelated projects) is byte-identical -- the pending-notice feature adds ZERO noise when nothing is pending" "a=$projAFirstCtx b=$projBNextCtx"
+        Assert-True ($projBNextCtx -match '^SUMMONAIKIT HARNESS REQUIRED') "[$Label] NEW (c) the injected contract starts exactly with the original vendor text, nothing prepended" "ctx=$projBNextCtx"
+
+        Write-Host ''
+        Write-Host "--- [$Label] (c) the only edit after the reviewer touches a .md file: no notice, not blocked ---"
+        $projC = New-HarnessProject -HookPath $claudeHook -Name "review-notice-$slug-proj-c"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projC.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projC.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projC.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projC.Dir -Role 'reviewer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projC.Dir -FilePath 'README.md'
+        $outC = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projC.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outC.ExitCode
+        Assert-True ($outC.ExitCode -eq 0) "[$Label] (c) a doc-only edit after review is not blocked" "exit=$($outC.ExitCode) stdout=$($outC.Stdout) stderr=$($outC.Stderr)"
+        Assert-True (($outC.Stdout) -notmatch 'systemMessage') "[$Label] (c) a doc-only edit fires no notice, so no systemMessage either" "stdout=$($outC.Stdout)"
+        Assert-True (-not (Test-Path -LiteralPath $projC.LogPath)) "[$Label] (c) MEDIO regression guard: the evidence log is removed on close (always true now on a clean close, notice or not)"
+        Assert-True (-not (Test-Path -LiteralPath $projC.PendingPath)) "[$Label] (c) no notice fired for a doc-only edit after review -- no pending-notice file was written either"
+
+        Write-Host ''
+        Write-Host "--- [$Label] MEDIO 2 (new): a root tracker file (STATUS.json) edited after review does NOT fire the notice, same as a .md file ---"
+        $projT = New-HarnessProject -HookPath $claudeHook -Name "review-notice-$slug-proj-tracker"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projT.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projT.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projT.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projT.Dir -Role 'reviewer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projT.Dir -FilePath 'STATUS.json'
+        $outT = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projT.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outT.ExitCode
+        Assert-True ($outT.ExitCode -eq 0) "[$Label] MEDIO 2: a tracker-file-only edit after review is not blocked" "exit=$($outT.ExitCode)"
+        Assert-True (-not (Test-Path -LiteralPath $projT.PendingPath)) "[$Label] MEDIO 2: a root STATUS.json (evident tracker file) edited after review does NOT fire the notice"
+
+        Write-Host ''
+        Write-Host "--- [$Label] MEDIO 2 (new): a REAL config file (tsconfig.json, not a tracker name) edited after review STILL fires the notice -- the narrow-exclusion risk is covered ---"
+        $projJ = New-HarnessProject -HookPath $claudeHook -Name "review-notice-$slug-proj-realjson"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projJ.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projJ.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projJ.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projJ.Dir -Role 'reviewer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projJ.Dir -FilePath 'tsconfig.json'
+        $outJ = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projJ.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outJ.ExitCode
+        Assert-True ($outJ.ExitCode -eq 0) "[$Label] MEDIO 2: a real-config-edit-after-review turn is still never blocked (advisory-only)" "exit=$($outJ.ExitCode)"
+        Assert-True (Test-Path -LiteralPath $projJ.PendingPath) "[$Label] MEDIO 2: a real config file (tsconfig.json) edited after review STILL fires the notice -- the narrow tracker/metadata exclusion must not swallow real config"
+
+        Write-Host ''
+        Write-Host "--- [$Label] fail-open: a missing/corrupt order-counter file never blocks and never logs a notice it cannot actually measure ---"
+        $projD1 = New-HarnessProject -HookPath $claudeHook -Name "review-notice-$slug-proj-d1"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projD1.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projD1.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projD1.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projD1.Dir -Role 'reviewer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projD1.Dir -FilePath 'src/app.py'
+        Assert-True (Test-Path -LiteralPath $projD1.OrderPath) "[$Label] sanity: the order-counter file exists before we remove it"
+        Remove-Item -LiteralPath $projD1.OrderPath -Force
+        $outD1 = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projD1.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outD1.ExitCode
+        Assert-True ($outD1.ExitCode -eq 0) "[$Label] fail-open: a MISSING order-counter file does not block a turn that would otherwise have gotten a notice" "exit=$($outD1.ExitCode)"
+        Assert-True (-not (Test-Path -LiteralPath $projD1.PendingPath)) "[$Label] fail-open: no notice is written when the order-counter file cannot be found -- `"cannot measure`" means stay silent, not assume the worst"
+
+        $projD2 = New-HarnessProject -HookPath $claudeHook -Name "review-notice-$slug-proj-d2"
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projD2.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projD2.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projD2.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $claudeHook -Dir $projD2.Dir -Role 'reviewer'
+        Add-HarnessEdit -HookPath $claudeHook -Dir $projD2.Dir -FilePath 'src/app.py'
+        Write-Utf8NoBomFile -Path $projD2.OrderPath -Content "this is not a key=value order file at all`n"
+        $outD2 = Invoke-HarnessHook -HookPath $claudeHook -WorkingDirectory $projD2.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outD2.ExitCode
+        Assert-True ($outD2.ExitCode -eq 0) "[$Label] fail-open: a CORRUPT order-counter file does not block" "exit=$($outD2.ExitCode)"
+        Assert-True (-not (Test-Path -LiteralPath $projD2.PendingPath)) "[$Label] fail-open: no notice is written when the order-counter file is corrupt"
+
+        Write-Host ''
+        Write-Host "--- [$Label] codex variant: the same (a)/(b) scenarios, INCLUDING the new pending-notice injection, also hold on the .codex hook, not just on .claude ---"
+        $projCodexA = New-HarnessProject -HookPath $codexHook -Name "review-notice-$slug-codex-a"
+        Add-HarnessSubagent -HookPath $codexHook -Dir $projCodexA.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $codexHook -Dir $projCodexA.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $codexHook -Dir $projCodexA.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $codexHook -Dir $projCodexA.Dir -Role 'reviewer'
+        Add-HarnessEdit -HookPath $codexHook -Dir $projCodexA.Dir -FilePath 'src/app.py'
+        $outCodexA = Invoke-HarnessHook -HookPath $codexHook -WorkingDirectory $projCodexA.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outCodexA.ExitCode
+        Assert-True ($outCodexA.ExitCode -eq 0) "[$Label] codex variant (a): edit-after-review is NOT blocked on the .codex hook either" "exit=$($outCodexA.ExitCode) stdout=$($outCodexA.Stdout) stderr=$($outCodexA.Stderr)"
+        Assert-True (($outCodexA.Stdout) -match '"systemMessage"') "[$Label] codex variant (a): the immediate systemMessage channel works on the .codex hook shape too" "stdout=$($outCodexA.Stdout)"
+        # The detailed evidence-log CONTENT (timestamp, caveat wording) is
+        # already proven above on .claude via the probe-before-close pattern;
+        # on .codex the log is removed the same way on a clean close (shared
+        # RN-E code path), so the meaningful cross-check here is the surviving
+        # pending-notice file, plus the next-turn injection checked right below.
+        Assert-True (-not (Test-Path -LiteralPath $projCodexA.LogPath)) "[$Label] codex variant (a): the evidence log is removed on the clean close too, same as .claude"
+        Assert-True (Test-Path -LiteralPath $projCodexA.PendingPath) "[$Label] codex variant (a): the pending-notice file survives the clean close on .codex too"
+
+        $projCodexANextTurn = Invoke-HarnessHook -HookPath $codexHook -WorkingDirectory $projCodexA.Dir -Json '{"hook_event_name":"UserPromptSubmit","prompt":"continue -saikit","session_id":"codex-a-sess"}'
+        $script:RnStopExitCodes += $projCodexANextTurn.ExitCode
+        Assert-True ($projCodexANextTurn.ExitCode -eq 0) "[$Label] codex variant NEW (a): the following turn never blocks" "exit=$($projCodexANextTurn.ExitCode)"
+        Assert-True (($projCodexANextTurn.Stdout) -match 'SAIKIT REVIEW NOTICE: in your previous turn, code was edited after the reviewer subagent last ran, and those edits were not reviewed') "[$Label] codex variant NEW (a): the pending notice is injected into the next turn's contract on .codex too" "stdout=$($projCodexANextTurn.Stdout)"
+
+        $projCodexB = New-HarnessProject -HookPath $codexHook -Name "review-notice-$slug-codex-b"
+        Add-HarnessSubagent -HookPath $codexHook -Dir $projCodexB.Dir -Role 'implementer'
+        Add-HarnessEdit -HookPath $codexHook -Dir $projCodexB.Dir -FilePath 'src/app.py'
+        Add-HarnessSubagent -HookPath $codexHook -Dir $projCodexB.Dir -Role 'verifier'
+        Add-HarnessSubagent -HookPath $codexHook -Dir $projCodexB.Dir -Role 'reviewer'
+        $outCodexB = Invoke-HarnessHook -HookPath $codexHook -WorkingDirectory $projCodexB.Dir -Json $RnReceipt
+        $script:RnStopExitCodes += $outCodexB.ExitCode
+        Assert-True ($outCodexB.ExitCode -eq 0) "[$Label] codex variant (b): the happy path still passes on .codex" "exit=$($outCodexB.ExitCode) stdout=$($outCodexB.Stdout) stderr=$($outCodexB.Stderr)"
+        Assert-True (-not (Test-Path -LiteralPath $projCodexB.LogPath)) "[$Label] codex variant (b): the evidence log is removed on close, same as .claude"
+        Assert-True (-not (Test-Path -LiteralPath $projCodexB.PendingPath)) "[$Label] codex variant (b): no notice fired on the happy path, so no pending-notice file was written either"
+    }
+
+    # ---- ALWAYS run against the frozen, version-controlled fixtures: this is
+    # the mandatory, PRIMARY pass -- it never depends on what is or is not
+    # installed on the machine running the suite.
+    Invoke-ReviewNoticeScenarios -ClaudeHookSource $FrozenClaudeHook -CodexHookSource $FrozenCodexHook -Label 'frozen fixture'
+
+    # ---- OPPORTUNISTIC bonus pass against whatever is actually installed on
+    # THIS machine (if anything). Returns $true if it actually ran, $false if
+    # it skipped -- callers use this to prove the skip never turns into a
+    # failure (test (e) below).
+    function Invoke-OpportunisticLiveHookPass {
+        param([string]$ClaudeHookPath, [string]$CodexHookPath, [string]$Label)
+        if (-not (Test-Path -LiteralPath $ClaudeHookPath) -or -not (Test-Path -LiteralPath $CodexHookPath)) {
+            Write-Host ''
+            Write-Host "[skip] $Label -- the real installed SummonAI Kit hooks were not both found on this machine (claude=$ClaudeHookPath codex=$CodexHookPath). The frozen fixtures above already covered every behavior in this group; this pass is only a bonus drift check, so it is SKIPPED, not failed." -ForegroundColor Yellow
+            return $false
+        }
+        Write-Host ''
+        Write-Host "=== [$Label] bonus pass: the same suite, driven against the hooks actually installed on this machine ==="
+        Invoke-ReviewNoticeScenarios -ClaudeHookSource $ClaudeHookPath -CodexHookSource $CodexHookPath -Label $Label
+        return $true
+    }
+
+    Invoke-OpportunisticLiveHookPass -ClaudeHookPath $LiveClaudeHookForRnTests -CodexHookPath $LiveCodexHookForRnTests -Label 'live install' | Out-Null
+
+    # ---- (e): the opportunistic pass correctly SKIPS (never fails) on a
+    # simulated machine that has .claude installed but NOT .codex -- the
+    # exact real-world gap (ALTO 2) that used to turn the whole group red. A
+    # synthetic profile is enough here: only its PRESENCE/ABSENCE matters to
+    # the skip logic under test, not its content.
+    Write-Host ''
+    Write-Host '=== TEST GROUP 3m (e): the opportunistic live-hook pass skips cleanly (never fails) on a simulated machine without .codex installed ==='
+    $noCodexProfile = Join-Path $TestFixturesDir 'simulated-no-codex-profile'
+    New-Item -ItemType Directory -Path (Join-Path $noCodexProfile '.claude\hooks') -Force | Out-Null
+    Copy-Item -LiteralPath $FrozenClaudeHook -Destination (Join-Path $noCodexProfile '.claude\hooks\summonaikit-harness.sh') -Force
+    # Deliberately NO .codex\hooks\summonaikit-harness.sh anywhere under here.
+    $failCountBeforeNoCodex = $script:FailCount
+    $ranNoCodex = Invoke-OpportunisticLiveHookPass -ClaudeHookPath (Join-Path $noCodexProfile '.claude\hooks\summonaikit-harness.sh') -CodexHookPath (Join-Path $noCodexProfile '.codex\hooks\summonaikit-harness.sh') -Label 'simulated machine without .codex'
+    Assert-True ($ranNoCodex -eq $false) '(e) the opportunistic pass correctly reports it was SKIPPED (not run) when .codex is missing, instead of hard-failing' "ranNoCodex=$ranNoCodex"
+    Assert-True ($script:FailCount -eq $failCountBeforeNoCodex) '(e) simulating a machine without .codex adds ZERO new failures to the suite -- this is the exact real-world gap (ALTO 2) that used to turn TEST GROUP 3m red for an unrelated reason' "before=$failCountBeforeNoCodex after=$($script:FailCount)"
+
+    Write-Host ''
+    Write-Host '--- (d)/(f) THE MOST IMPORTANT CHECK: not one Stop invocation across every pass above (frozen fixture, live install if present) ever returned exit code 2 ---'
+    # This patch is advisory-only by hard requirement: it must never turn a
+    # passing turn into a blocked one. Every scenario above -- including the
+    # ones that DO trigger the notice -- is asserted individually above to
+    # exit 0, but this single aggregate check is the one the spec calls out as
+    # non-negotiable: scan every exit code collected across every pass and
+    # confirm exit code 2 (the hook's own block-decision code) never appears,
+    # not even once.
+    $rnBlockedCount = @($script:RnStopExitCodes | Where-Object { $_ -eq 2 }).Count
+    Assert-True ($rnBlockedCount -eq 0) '(d)/(f) across every scenario in every pass of this test group, SAIKIT-REVIEW-NOTICE v1 never produced exit code 2 (the block-decision exit code)' "exit codes seen: $($script:RnStopExitCodes -join ',')"
+}
+
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE
 # home directories -- NEVER the real ~/.claude, ~/.codex, ~/.kimi-code.
