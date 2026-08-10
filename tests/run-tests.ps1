@@ -920,10 +920,10 @@ Write-Host '=== TEST GROUP 3k (kimi cross-review 2026-08-03): saikit-gate-heal r
 # assuming. The fixture is synthetic (the real hook lives outside this repo).
 $SaikitGateHealScript = Join-Path $QualityKitDir 'saikit-gate-heal.ps1'
 function Invoke-SaikitGateHeal {
-    param([string]$FakeHome)
+    param([string]$FakeHome, [string[]]$ExtraArgs = @())
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'powershell'
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $SaikitGateHealScript)
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $SaikitGateHealScript) + $ExtraArgs
     $quotedParts = @()
     foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
     $psi.Arguments = ($quotedParts -join ' ')
@@ -1553,6 +1553,197 @@ Retro: none
     # not even once.
     $rnBlockedCount = @($script:RnStopExitCodes | Where-Object { $_ -eq 2 }).Count
     Assert-True ($rnBlockedCount -eq 0) '(d)/(f) across every scenario in every pass of this test group, SAIKIT-REVIEW-NOTICE v1 never produced exit code 2 (the block-decision exit code)' "exit codes seen: $($script:RnStopExitCodes -join ',')"
+}
+
+# ------------------------------------------------------------------
+# TEST GROUP 3n / 3o: convivencia con summonaikit-claude (su Task 2.3).
+# ------------------------------------------------------------------
+Write-Host ''
+Write-Host '=== TEST GROUP 3n: a hook that carries the summonaikit-claude ownership marker is SKIPPED, not patched ==='
+# POR QUE: el repo summonaikit-claude adopto el hook de .claude por REEMPLAZO
+# (escribe el archivo entero desde su propia fuente). Este script lo parcha por
+# ANCLAS. Dos escritores en SessionStart sobre la MISMA ruta, con modelos
+# distintos, pueden dejar el archivo doblemente parchado o truncado. La costura
+# acordada es por host: quien lleva el marcador de propiedad se saltea aca.
+#
+# El criterio de deteccion es DELIBERADAMENTE mas ancho que el del instalador
+# del otro repo: ese exige el marcador en la linea 2 exacta y trata cualquier
+# otra posicion como "desconocido, no tocar"; este saltea ante el marcador en
+# CUALQUIER linea. Los dos convergen en no escribir, que es lo unico que
+# importa para no pisarse -- y ante una senal de propiedad ambigua, abstenerse
+# es la unica opcion segura para el escritor por anclas.
+$OwnershipMarkerLine = '# SAIKIT-CLAUDE-OWNED summonaikit-claude 1.0.0'
+
+function New-MarkedHookText {
+    param([string]$Text, [int]$AtLine = 2)
+    $lines = @(($Text -replace "`r`n", "`n") -split "`n")
+    $head = $lines[0..($AtLine - 2)]
+    $tail = $lines[($AtLine - 1)..($lines.Count - 1)]
+    return ((@($head) + @($OwnershipMarkerLine) + @($tail)) -join "`n")
+}
+
+# Fixture: el hook del vendor congelado MAS el marcador en la linea 2 -- o sea,
+# exactamente la forma del archivo que summonaikit-claude instala. Es el
+# fixture que discrimina: sin el skip, este archivo se parcharia (trae todas
+# las anclas de SAIKIT-REVIEW-NOTICE intactas y todavia no ese parche); con el
+# skip, queda igual byte a byte.
+#
+# El parche que discrimina aca es REVIEW-NOTICE y no SENTINEL: el hook
+# congelado ya venia con el sentinel aplicado (es una copia de un hook real,
+# no de uno pristino), asi que buscar el marcador del sentinel despues del heal
+# daria verde con o sin el skip. El sentinel tiene su propio caso discriminante
+# mas abajo, sobre el fixture sintetico que no trae ninguno de los dos.
+$healHomeOwned = Join-Path $TestFixturesDir 'fake-home-heal-owned'
+New-Item -ItemType Directory -Path (Join-Path $healHomeOwned '.claude\hooks') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $healHomeOwned '.codex\hooks') -Force | Out-Null
+$ownedClaudeHook = Join-Path $healHomeOwned '.claude\hooks\summonaikit-harness.sh'
+$ownedCodexHook = Join-Path $healHomeOwned '.codex\hooks\summonaikit-harness.sh'
+Write-Utf8NoBomFile -Path $ownedClaudeHook -Content (New-MarkedHookText -Text (Read-TextFile -Path $FrozenClaudeHook))
+# El .codex del MISMO home queda SIN marcador: el skip tiene que ser por
+# archivo, no por corrida.
+Copy-Item -LiteralPath $FrozenCodexHook -Destination $ownedCodexHook -Force
+
+$ownedHashBefore = (Get-FileHash -LiteralPath $ownedClaudeHook -Algorithm SHA256).Hash
+$codexHashBefore = (Get-FileHash -LiteralPath $ownedCodexHook -Algorithm SHA256).Hash
+$rHealOwned = Invoke-SaikitGateHeal -FakeHome $healHomeOwned
+$ownedHashAfter = (Get-FileHash -LiteralPath $ownedClaudeHook -Algorithm SHA256).Hash
+$codexHashAfter = (Get-FileHash -LiteralPath $ownedCodexHook -Algorithm SHA256).Hash
+$ownedAfter = Read-TextFile -Path $ownedClaudeHook
+$codexAfterOwned = Read-TextFile -Path $ownedCodexHook
+
+Assert-True ($ownedHashAfter -eq $ownedHashBefore) 'a hook carrying the ownership marker is left byte-identical -- the other repo owns that file and rewrites it whole' "before=$ownedHashBefore after=$ownedHashAfter"
+Assert-True ($ownedAfter -notmatch 'SAIKIT-REVIEW-NOTICE') 'the skipped hook did NOT get the review-notice patch injected -- it would have (this fixture has all seven RN anchors intact and none of that patch yet)'
+Assert-True ($rHealOwned.Stdout -match 'saltado') 'the skip is REPORTED, not silent -- an operator must be able to see why .claude stopped being patched here' "stdout=$($rHealOwned.Stdout)"
+Assert-True ($rHealOwned.Stdout -match 'SAIKIT-CLAUDE-OWNED') 'the report names the marker it found, so the reason is diagnosable without reading this script'
+Assert-True ($rHealOwned.Stdout -notmatch 'ANCLAS-CAMBIARON') 'a skipped-by-ownership hook is NOT reported as a broken patch -- it is the expected steady state, not a failure' "stdout=$($rHealOwned.Stdout)"
+Assert-True ($rHealOwned.ExitCode -eq 0) 'the skip still exits 0 (fail-open: this script must never break a session start)' "exit=$($rHealOwned.ExitCode)"
+
+# El punto 2 de la DoD: los otros perfiles se siguen parchando igual que hoy.
+Assert-True ($codexHashAfter -ne $codexHashBefore) 'the UNMARKED .codex hook in the SAME run WAS rewritten -- the skip is per FILE, not per run' "before=$codexHashBefore after=$codexHashAfter"
+Assert-True ($codexAfterOwned -match 'SAIKIT-REVIEW-NOTICE') 'the unmarked .codex hook still gets the review-notice patch it was missing'
+
+# Idempotencia del skip: una segunda corrida tampoco lo toca.
+Invoke-SaikitGateHeal -FakeHome $healHomeOwned | Out-Null
+$ownedHash2nd = (Get-FileHash -LiteralPath $ownedClaudeHook -Algorithm SHA256).Hash
+Assert-True ($ownedHash2nd -eq $ownedHashBefore) 'a second heal run still leaves the owned hook byte-identical' "before=$ownedHashBefore after2nd=$ownedHash2nd"
+
+# Marcador FUERA de la linea 2: sigue siendo una senal de propiedad, y ante una
+# senal ambigua el escritor por anclas se abstiene igual (el instalador del otro
+# repo hace lo simetrico: lo llama "desconocido" y tampoco escribe).
+#
+# Este fixture es ademas el caso discriminante del OTRO parche: $anchorBlock no
+# trae ninguno de los dos marcadores, asi que sin el skip se le inyectaria el
+# sentinel. Entre los dos fixtures de este grupo, cada parche tiene un caso que
+# lo mata.
+$healHomeOwnedLate = Join-Path $TestFixturesDir 'fake-home-heal-owned-late'
+New-Item -ItemType Directory -Path (Join-Path $healHomeOwnedLate '.claude\hooks') -Force | Out-Null
+$lateClaudeHook = Join-Path $healHomeOwnedLate '.claude\hooks\summonaikit-harness.sh'
+# Linea 3 y no cualquiera: es la linea EN BLANCO entre el ancla A y el ancla B,
+# el unico lugar de este fixture que esta fuera de la linea 2 y no parte ninguna
+# ancla. Medido: con el marcador en la linea 5 este caso quedaba adentro del
+# ancla B, y entonces sobrevivia a una mutacion del criterio "cualquier linea"
+# -> "solo la linea 2" por el motivo equivocado (el ancla rota, no el skip).
+Write-Utf8NoBomFile -Path $lateClaudeHook -Content (New-MarkedHookText -Text $anchorBlock -AtLine 3)
+$lateHashBefore = (Get-FileHash -LiteralPath $lateClaudeHook -Algorithm SHA256).Hash
+$rHealLate = Invoke-SaikitGateHeal -FakeHome $healHomeOwnedLate
+$lateHashAfter = (Get-FileHash -LiteralPath $lateClaudeHook -Algorithm SHA256).Hash
+$lateAfter = Read-TextFile -Path $lateClaudeHook
+Assert-True ($lateHashAfter -eq $lateHashBefore) 'the marker on a line OTHER than line 2 also skips -- ambiguous ownership is still ownership for a by-anchor writer' "before=$lateHashBefore after=$lateHashAfter"
+Assert-True ($lateAfter -notmatch 'SAIKIT-SENTINEL-GATE') 'the SENTINEL patch is skipped too -- this fixture carries neither marker, so it would have been patched without the skip'
+Assert-True ($rHealLate.Stdout -notmatch 'ANCLAS-CAMBIARON') 'the skip is evaluated BEFORE the anchor check -- this fixture has none of the review-notice anchors, and checking them first would raise a permanent false alarm about a file that is never going to be patched here' "stdout=$($rHealLate.Stdout)"
+Assert-True ($rHealLate.ExitCode -eq 0) 'the out-of-position marker case still exits 0' "exit=$($rHealLate.ExitCode)"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3o: check-hook-registration.sh is wired into the heal (summonaikit-claude Task 0.3 + 2.3) ==='
+# POR QUE: todo lo que este script mira es CONTENIDO. El modo de falla mas
+# silencioso del sistema es el otro: settings.json deja de nombrar al hook y el
+# gate no existe, con el archivo intacto. El verificador de ese registro vive en
+# summonaikit-claude (tools/check-hook-registration.sh); aca se lo cablea al
+# unico script que ya corre en cada SessionStart.
+#
+# El fixture PRIMARIO es un verificador falso, por la misma razon que TEST GROUP
+# 3m congelo sus vendor hooks (ALTO 2, 2026-08-08): la bateria no puede volverse
+# roja porque otro repo no este clonado en esta maquina. Lo que se prueba aca es
+# el CABLEADO -- que se lo invoque, con el settings del perfil correcto, y que su
+# salida llegue al operador. El verificador real se ejercita como pasada
+# oportunista mas abajo.
+$fakeCheckDir = Join-Path $TestFixturesDir 'fake-registration-check'
+New-Item -ItemType Directory -Path $fakeCheckDir -Force | Out-Null
+$fakeCheckLoud = Join-Path $fakeCheckDir 'loud.sh'
+Write-Utf8NoBomFile -Path $fakeCheckLoud -Content "#!/usr/bin/env bash`nprintf 'FAKE-REGISTRATION-CHECK saw: %s\n' `"`$*`"`nexit 0`n"
+$fakeCheckQuiet = Join-Path $fakeCheckDir 'quiet.sh'
+Write-Utf8NoBomFile -Path $fakeCheckQuiet -Content "#!/usr/bin/env bash`nexit 0`n"
+
+function New-HealHomeWithSettings {
+    # $SettingsJson vacio = NO se escribe settings.json. Va sin tipar a
+    # proposito: un [string] convierte $null en '' y el `if` de abajo escribia
+    # igual un settings.json de 0 bytes, que es un perfil CON settings (ilegible)
+    # y no el caso "no hay perfil" que este helper tiene que poder construir.
+    param([string]$Name, $SettingsJson)
+    $home_ = Join-Path $TestFixturesDir $Name
+    New-Item -ItemType Directory -Path (Join-Path $home_ '.claude\hooks') -Force | Out-Null
+    Write-Utf8NoBomFile -Path (Join-Path $home_ '.claude\hooks\summonaikit-harness.sh') -Content $anchorBlock
+    if (-not [string]::IsNullOrEmpty($SettingsJson)) {
+        Write-Utf8NoBomFile -Path (Join-Path $home_ '.claude\settings.json') -Content $SettingsJson
+    }
+    return $home_
+}
+
+$settingsWithHook = @'
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/summonaikit-harness.sh"}]}],"PostToolUse":[{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/summonaikit-harness.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"bash ~/.claude/hooks/summonaikit-harness.sh"}]}]}}
+'@
+$settingsWithoutHook = @'
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo something-else"}]}]}}
+'@
+
+# (a) cableado: se lo invoca, y con el settings del perfil .claude de ESTE home.
+$regHomeA = New-HealHomeWithSettings -Name 'fake-home-heal-reg-a' -SettingsJson $settingsWithoutHook
+$rRegA = Invoke-SaikitGateHeal -FakeHome $regHomeA -ExtraArgs @('-RegistrationCheck', $fakeCheckLoud)
+Assert-True ($rRegA.Stdout -match 'FAKE-REGISTRATION-CHECK saw:') 'the heal actually RUNS the registration checker (it is wired, not just documented)' "stdout=$($rRegA.Stdout)"
+Assert-True ($rRegA.Stdout -match '--settings') 'the checker is called with --settings, the contract it documents'
+Assert-True ($rRegA.Stdout -match 'fake-home-heal-reg-a') 'it is pointed at THIS profile''s settings, not at the real ~/.claude (Core Rule 4 of the other repo: never test against live state)' "stdout=$($rRegA.Stdout)"
+Assert-True ($rRegA.ExitCode -eq 0) 'wiring the checker in does not change the heal''s exit code' "exit=$($rRegA.ExitCode)"
+
+# (b) el verificador callado no agrega ruido: su propio diseno ya calla cuando
+# el registro esta completo, y el heal no debe inventar una linea encima.
+$regHomeB = New-HealHomeWithSettings -Name 'fake-home-heal-reg-b' -SettingsJson $settingsWithHook
+$rRegB = Invoke-SaikitGateHeal -FakeHome $regHomeB -ExtraArgs @('-RegistrationCheck', $fakeCheckQuiet)
+Assert-True ($rRegB.Stdout -notmatch 'REGISTRO') 'a checker with nothing to say produces NO registration line at all -- a warning on every startup is how an operator learns to ignore warnings' "stdout=$($rRegB.Stdout)"
+Assert-True ($rRegB.ExitCode -eq 0) 'the quiet path still exits 0' "exit=$($rRegB.ExitCode)"
+
+# (c) sin settings que mirar, no se invoca nada. Es lo que mantiene a esta
+# bateria (y a los fake homes de 3k/3l/3m, que no tienen settings) libre de
+# ruido y sin depender de que otro repo exista en la maquina.
+$regHomeC = New-HealHomeWithSettings -Name 'fake-home-heal-reg-c' -SettingsJson $null
+$rRegC = Invoke-SaikitGateHeal -FakeHome $regHomeC -ExtraArgs @('-RegistrationCheck', $fakeCheckLoud)
+Assert-True ($rRegC.Stdout -notmatch 'FAKE-REGISTRATION-CHECK') 'with no settings.json and no settings.local.json in the profile there is no registration to verify, so the checker is not run at all' "stdout=$($rRegC.Stdout)"
+
+# (d) verificador ausente: unknown, NUNCA "el registro falta" (Core Rule 2 del
+# otro repo -- no haber podido mirar no es haber visto ausencia).
+$regHomeD = New-HealHomeWithSettings -Name 'fake-home-heal-reg-d' -SettingsJson $settingsWithoutHook
+$rRegD = Invoke-SaikitGateHeal -FakeHome $regHomeD -ExtraArgs @('-RegistrationCheck', (Join-Path $fakeCheckDir 'no-existe.sh'))
+Assert-True ($rRegD.Stdout -match 'unknown') 'a missing checker is reported as unknown' "stdout=$($rRegD.Stdout)"
+Assert-True ($rRegD.Stdout -notmatch 'REGISTRO DEL HOOK INCOMPLETO') 'a missing checker NEVER claims the registration is absent -- not observed is not absent'
+Assert-True ($rRegD.ExitCode -eq 0) 'a missing checker does not break the session start either' "exit=$($rRegD.ExitCode)"
+
+# (e) pasada OPORTUNISTA con el verificador REAL de summonaikit-claude, si el
+# repo esta en esta maquina. Si no esta, se avisa y se sigue: la bateria del kit
+# no puede depender de otro repo (misma politica que la pasada live de 3m).
+$RealRegistrationCheck = Join-Path (
+    $(if ($env:SAIKIT_CLAUDE_REPO) { $env:SAIKIT_CLAUDE_REPO } else { 'C:\dev\summonaikit-claude' })
+) 'tools\check-hook-registration.sh'
+if (Test-Path -LiteralPath $RealRegistrationCheck) {
+    $regHomeE = New-HealHomeWithSettings -Name 'fake-home-heal-reg-e' -SettingsJson $settingsWithoutHook
+    $rRegE = Invoke-SaikitGateHeal -FakeHome $regHomeE -ExtraArgs @('-RegistrationCheck', $RealRegistrationCheck)
+    Assert-True ($rRegE.Stdout -match 'REGISTRO DEL HOOK INCOMPLETO') '(live) the REAL checker, driven through the heal, reports a settings.json that no longer names the hook' "stdout=$($rRegE.Stdout)"
+    Assert-True ($rRegE.Stdout -match 'PostToolUse') '(live) it names which phases the gate stopped running in'
+    Assert-True ($rRegE.ExitCode -eq 0) '(live) the real checker never changes the heal''s exit code' "exit=$($rRegE.ExitCode)"
+
+    $regHomeF = New-HealHomeWithSettings -Name 'fake-home-heal-reg-f' -SettingsJson $settingsWithHook
+    $rRegF = Invoke-SaikitGateHeal -FakeHome $regHomeF -ExtraArgs @('-RegistrationCheck', $RealRegistrationCheck)
+    Assert-True ($rRegF.Stdout -notmatch 'REGISTRO DEL HOOK') '(live) a fully registered profile produces no registration output at all' "stdout=$($rRegF.Stdout)"
+} else {
+    Write-Host "SKIP: summonaikit-claude no esta en esta maquina ($RealRegistrationCheck) -- pasada oportunista del verificador real omitida (la bateria del kit no depende de otro repo)."
 }
 
 # ------------------------------------------------------------------

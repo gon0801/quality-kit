@@ -6,6 +6,9 @@ $files = @(
     'C:\Users\ehven\quality-kit\uninstall-ai-rules.ps1',
     'C:\Users\ehven\quality-kit\install-docs-groom.ps1',
     'C:\Users\ehven\quality-kit\uninstall-docs-groom.ps1',
+    # Faltaba, y es el unico script del kit que corre en CADA SessionStart: un
+    # error de sintaxis aca se descubre en el arranque siguiente, no aca.
+    'C:\Users\ehven\quality-kit\saikit-gate-heal.ps1',
     'C:\Users\ehven\quality-kit\tests\run-tests.ps1'
 )
 $hadError = $false

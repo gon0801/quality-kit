@@ -49,14 +49,45 @@
   Vive en quality-kit (no en ~/.claude/hooks) justamente para que un install del
   kit no pueda borrarlo.
 
+  CONVIVENCIA CON summonaikit-claude (su Task 2.3)
+  Ese repo adopto el hook de .claude y lo instala por REEMPLAZO: escribe el
+  archivo entero desde su propia fuente, que YA trae los dos parches adentro.
+  Este script lo escribe por ANCLAS. Dos escritores sobre la misma ruta en el
+  mismo SessionStart, con modelos distintos, pueden dejar el archivo doblemente
+  parchado o truncado.
+
+  La costura es por host: cualquier hook que lleve el marcador de propiedad
+  (`# SAIKIT-CLAUDE-OWNED ...`) se SALTEA aca, entero, sin evaluar anclas. No
+  se pierde gate: la fuente de ese repo trae el sentinel y el aviso de revision
+  ya aplicados. .codex / .cursor / .agents no cambian en nada.
+
+  El criterio es a proposito mas ancho que el del instalador del otro repo: el
+  exige el marcador en la linea 2 exacta y trata cualquier otra posicion como
+  "desconocido, no tocar"; este saltea ante el marcador en CUALQUIER linea. Los
+  dos convergen en no escribir, que es lo unico que hace falta para no pisarse
+  -- y ante una senal de propiedad ambigua, abstenerse es la unica opcion segura
+  para el escritor por anclas.
+
+  REGISTRO DEL HOOK (Task 0.3 del mismo repo, cableada aca)
+  Todo lo que este script mira es CONTENIDO. El modo de falla mas silencioso es
+  el otro: settings.json deja de nombrar al hook y el gate no existe, con el
+  archivo intacto. `check-hook-registration.sh` verifica eso, y este es el unico
+  script propio que ya corre en cada SessionStart -- por eso se cablea aca.
+  Advisory puro: nunca mueve el exit code.
+
   USO
     powershell -ExecutionPolicy Bypass -File saikit-gate-heal.ps1
     powershell -ExecutionPolicy Bypass -File saikit-gate-heal.ps1 -Check
+    powershell -ExecutionPolicy Bypass -File saikit-gate-heal.ps1 -RegistrationCheck <path>
 #>
 [CmdletBinding()]
 param(
     [switch]$Check,
-    [switch]$Quiet
+    [switch]$Quiet,
+    # Ruta a check-hook-registration.sh. Vacio = se busca en los candidatos
+    # declarados en Invoke-RegistrationCheck. Existe para que una bateria pueda
+    # apuntar a su propio fixture en vez del verificador real.
+    [string]$RegistrationCheck = ''
 )
 
 # Fail-open: este script jamas debe tumbar el arranque de una sesion.
@@ -71,7 +102,26 @@ $MARKER = 'SAIKIT-SENTINEL-GATE v1'
 # aplicando igual, y viceversa. Ver Invoke-SinglePatch mas abajo.
 $MARKER2 = 'SAIKIT-REVIEW-NOTICE v1'
 
+# Marcador de propiedad de summonaikit-claude (su Task 2.1). Ver CONVIVENCIA en
+# el header: un archivo que lo lleve es de ESE repo y no se toca aca.
+$OWNERSHIP_MARKER_PREFIX = '# SAIKIT-CLAUDE-OWNED '
+
 function ToLf([string]$s) { return ($s -replace "`r`n", "`n") }
+
+# Devuelve la linea del marcador de propiedad si el archivo lo lleva, o $null.
+# Se compara por PREFIJO DE LINEA y Ordinal, no con -match sobre el texto
+# entero: el marcador solo cuenta como declaracion de propiedad cuando ES la
+# linea, no cuando aparece citado adentro de un comentario o de un heredoc.
+function Get-OwnershipMarker {
+    param([string]$Text)
+    foreach ($line in ($Text -split "`n")) {
+        $l = $line.TrimEnd("`r")
+        if ($l.StartsWith($OWNERSHIP_MARKER_PREFIX, [System.StringComparison]::Ordinal)) {
+            return $l
+        }
+    }
+    return $null
+}
 
 # Cuenta ocurrencias literales (Ordinal, sin regex: las anclas traen $, (, ) y
 # corchetes que un -match interpretaria).
@@ -586,10 +636,92 @@ $reviewNoticeCoreAnchors = @(
     @{ k = 'RN-H'; v = $anchorRnH; ins = $insertRnH }
 )
 
+# ============================================================================
+# REGISTRO DEL HOOK — cableado de check-hook-registration.sh (ver el header).
+#
+# Advisory puro: nunca mueve el exit code de este script, igual que el resto.
+# El verificador ya trae su propia politica de ruido (calla cuando el registro
+# esta completo, dice `unknown` cuando no pudo mirar), asi que su salida se
+# imprime tal cual y sin filtrar -- tambien con -Quiet: cuando habla es porque
+# el gate no esta corriendo en alguna fase, y eso no es ruido de exito.
+# ============================================================================
+function Invoke-RegistrationCheck {
+    param([string]$CheckerPath, [switch]$Silent)
+
+    $claudeDir = Join-Path $env:USERPROFILE '.claude'
+    $settings = Join-Path $claudeDir 'settings.json'
+    $localSettings = Join-Path $claudeDir 'settings.local.json'
+
+    # Sin NINGUNO de los dos settings no hay registro que verificar: no es un
+    # perfil con el gate desregistrado, es un perfil que no existe. Callar aca
+    # es ademas lo que mantiene a la bateria del kit -- cuyos fake homes no
+    # tienen settings — libre de ruido y sin depender de este cableado.
+    if (-not (Test-Path -LiteralPath $settings) -and -not (Test-Path -LiteralPath $localSettings)) {
+        return
+    }
+
+    $checker = $CheckerPath
+    if (-not $checker) {
+        # 1) junto al hook, si alguna vez se instala ahi; 2) el repo que lo
+        # mantiene. La env var existe para no clavar la ruta de una maquina.
+        $repo = if ($env:SAIKIT_CLAUDE_REPO) { $env:SAIKIT_CLAUDE_REPO } else { 'C:\dev\summonaikit-claude' }
+        foreach ($c in @(
+            (Join-Path $claudeDir 'hooks\check-hook-registration.sh'),
+            (Join-Path $repo 'tools\check-hook-registration.sh')
+        )) {
+            if (Test-Path -LiteralPath $c) { $checker = $c; break }
+        }
+    }
+
+    # Core Rule 2 del repo del verificador: no haber podido mirar NO es haber
+    # visto que el registro falta. Se reporta unknown y nunca ausencia.
+    if (-not $checker -or -not (Test-Path -LiteralPath $checker)) {
+        if (-not $Silent) {
+            Write-Host "[i] SummonAI Kit: registro del hook: unknown - no se encontro check-hook-registration.sh (no se afirma que el registro falte: no se pudo mirar)." -ForegroundColor DarkGray
+        }
+        return
+    }
+
+    $bash = $null
+    $viaPath = Get-Command bash -ErrorAction SilentlyContinue
+    if ($null -ne $viaPath) {
+        $bash = $viaPath.Source
+    } else {
+        foreach ($c in @(
+            (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
+            (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+        )) {
+            if (Test-Path -LiteralPath $c) { $bash = $c; break }
+        }
+    }
+    if ($null -eq $bash) {
+        if (-not $Silent) {
+            Write-Host "[i] SummonAI Kit: registro del hook: unknown - no hay bash para correr el verificador." -ForegroundColor DarkGray
+        }
+        return
+    }
+
+    # Barras normales: la ruta viaja como argumento hacia un script de bash.
+    $toSlash = { param($p) $p -replace '\\', '/' }
+    try {
+        $out = & $bash (& $toSlash $checker) '--settings' (& $toSlash $settings)
+    }
+    catch {
+        if (-not $Silent) {
+            Write-Host "[i] SummonAI Kit: registro del hook: unknown - fallo el verificador ($($_.Exception.Message))." -ForegroundColor DarkGray
+        }
+        return
+    }
+    if ($out) {
+        Write-Host (($out | Out-String).TrimEnd())
+    }
+}
+
 $targets = @('.claude', '.codex', '.cursor', '.agents') |
     ForEach-Object { Join-Path $env:USERPROFILE (Join-Path $_ 'hooks\summonaikit-harness.sh') }
 
 $results = @()
+$skippedOwned = @()
 
 foreach ($path in $targets) {
     $short = $path.Replace($env:USERPROFILE, '~')
@@ -605,6 +737,17 @@ foreach ($path in $targets) {
     catch {
         $err = "ilegible: $($_.Exception.Message)"
         $results += [pscustomobject]@{ hook = $short; sentinel = $err; reviewnotice = $err }
+        continue
+    }
+
+    # El skip por propiedad va ANTES que cualquier evaluacion de anclas: un
+    # archivo de summonaikit-claude no tiene por que traer las anclas del
+    # vendor, y reportar "ANCLAS-CAMBIARON" sobre el seria una alarma falsa
+    # perpetua sobre un archivo que jamas se va a parchar aca.
+    $owner = Get-OwnershipMarker -Text $lf
+    if ($null -ne $owner) {
+        $results += [pscustomobject]@{ hook = $short; sentinel = 'saltado-propiedad'; reviewnotice = 'saltado-propiedad' }
+        $skippedOwned += "$short  ->  $owner"
         continue
     }
 
@@ -657,9 +800,28 @@ if ($broken -gt 0) {
     $results | Format-Table -AutoSize | Out-String | Write-Host
     Write-Host "[!] SummonAI Kit: $broken hook(s) con al menos un parche sin aplicar - revisar arriba cual (sentinel / reviewnotice)." -ForegroundColor Yellow
 }
-elseif (-not $Quiet -and $changed -gt 0) {
+elseif (-not $Quiet -and ($changed -gt 0 -or $skippedOwned.Count -gt 0)) {
     $results | Format-Table -AutoSize | Out-String | Write-Host
-    Write-Host "[OK] SummonAI Kit: parches re-aplicados en $changed hook(s)." -ForegroundColor Green
+    if ($changed -gt 0) {
+        Write-Host "[OK] SummonAI Kit: parches re-aplicados en $changed hook(s)." -ForegroundColor Green
+    }
 }
+
+# El salto por propiedad se DICE, no se deduce de la tabla: Format-Table recorta
+# las columnas al ancho de la consola y la linea del marcador -- que es el dato
+# diagnostico -- es justo lo que se perderia.
+#
+# Solo sin -Quiet, y esa es una decision: una vez adoptado el hook, el salto es
+# el estado NORMAL de cada arranque, y una linea informativa repetida en cada
+# SessionStart es exactamente como se entrena a un operador a ignorar los
+# avisos. A mano o con -Check se ve entero. Lo que NO depende de -Quiet es un
+# parche sin aplicar: eso sigue gritando arriba.
+if (-not $Quiet) {
+    foreach ($s in $skippedOwned) {
+        Write-Host "[i] SummonAI Kit: saltado, lo maneja summonaikit-claude (instala el archivo entero, con los dos parches adentro): $s" -ForegroundColor Cyan
+    }
+}
+
+Invoke-RegistrationCheck -CheckerPath $RegistrationCheck -Silent:$Quiet
 
 exit 0
