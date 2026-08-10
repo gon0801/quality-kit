@@ -87,7 +87,13 @@ param(
     # Ruta a check-hook-registration.sh. Vacio = se busca en los candidatos
     # declarados en Invoke-RegistrationCheck. Existe para que una bateria pueda
     # apuntar a su propio fixture en vez del verificador real.
-    [string]$RegistrationCheck = ''
+    [string]$RegistrationCheck = '',
+
+    # Tope para el verificador del registro. Es el unico proceso externo que
+    # este script lanza, y corre en cada SessionStart (cuyo propio timeout son
+    # 30 s): 15 deja margen de sobra para un chequeo que tarda menos de 1 s, y
+    # corta antes de comerse el arranque. 0 = sin tope (no recomendado).
+    [int]$RegistrationTimeoutSec = 15
 )
 
 # Fail-open: este script jamas debe tumbar el arranque de una sesion.
@@ -644,9 +650,24 @@ $reviewNoticeCoreAnchors = @(
 # esta completo, dice `unknown` cuando no pudo mirar), asi que su salida se
 # imprime tal cual y sin filtrar -- tambien con -Quiet: cuando habla es porque
 # el gate no esta corriendo en alguna fase, y eso no es ruido de exito.
+#
+# NINGUN `unknown` de aca se calla bajo -Quiet (cross-review codex, 2026-08-10).
+# La politica de "no repetir avisos en cada arranque" vale para el SKIP por
+# propiedad, que pasa en cada arranque SANO; estos avisos son lo contrario --
+# solo aparecen cuando algo ya se rompio (el verificador desaparecio, no hay
+# bash, se colgo, murio). Silenciarlos justo en -Quiet, que es el modo con el
+# que corre SessionStart, volveria "no se pudo mirar" indistinguible de "todo
+# bien": exactamente lo que la Core Rule 2 del otro repo prohibe.
 # ============================================================================
 function Invoke-RegistrationCheck {
-    param([string]$CheckerPath, [switch]$Silent)
+    param([string]$CheckerPath, [int]$TimeoutSec = 15)
+
+    # Un solo lugar para la forma del aviso: los cuatro caminos que no pudieron
+    # mirar dicen lo mismo y con la misma redaccion.
+    $decirUnknown = {
+        param($porQue)
+        Write-Host "[i] SummonAI Kit: registro del hook: unknown - $porQue (no se afirma que el registro falte: no se pudo mirar)." -ForegroundColor DarkGray
+    }
 
     $claudeDir = Join-Path $env:USERPROFILE '.claude'
     $settings = Join-Path $claudeDir 'settings.json'
@@ -676,9 +697,7 @@ function Invoke-RegistrationCheck {
     # Core Rule 2 del repo del verificador: no haber podido mirar NO es haber
     # visto que el registro falta. Se reporta unknown y nunca ausencia.
     if (-not $checker -or -not (Test-Path -LiteralPath $checker)) {
-        if (-not $Silent) {
-            Write-Host "[i] SummonAI Kit: registro del hook: unknown - no se encontro check-hook-registration.sh (no se afirma que el registro falte: no se pudo mirar)." -ForegroundColor DarkGray
-        }
+        & $decirUnknown "no se encontro check-hook-registration.sh"
         return
     }
 
@@ -695,25 +714,94 @@ function Invoke-RegistrationCheck {
         }
     }
     if ($null -eq $bash) {
-        if (-not $Silent) {
-            Write-Host "[i] SummonAI Kit: registro del hook: unknown - no hay bash para correr el verificador." -ForegroundColor DarkGray
-        }
+        & $decirUnknown "no hay bash para correr el verificador"
         return
     }
 
+    # Con proceso propio y no con `& $bash ...` por dos razones, las dos de la
+    # revision cruzada del 2026-08-10:
+    #
+    #   1. TOPE DE TIEMPO. Este script corre en CADA SessionStart y hasta ahora
+    #      no lanzaba ningun proceso externo. Ahora lanza bash, que lanza
+    #      python: si cualquiera de los dos se cuelga, se come el presupuesto
+    #      del arranque. Mismo motivo por el que cross-review.ps1 tiene
+    #      -TimeoutSec desde un cuelgue real (2026-07-05). Los parches ya estan
+    #      escritos cuando se llega aca, asi que cortar no pierde trabajo.
+    #   2. EXIT CODE. Un exit != 0 de un ejecutable nativo NO lanza excepcion en
+    #      PowerShell: con `&` y try/catch, un verificador que muere sin decir
+    #      nada se perdia entero y el arranque quedaba en silencio, que es
+    #      indistinguible de "el registro esta bien".
+    #
     # Barras normales: la ruta viaja como argumento hacia un script de bash.
     $toSlash = { param($p) $p -replace '\\', '/' }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $bash
+    $psi.Arguments = '"' + (& $toSlash $checker) + '" --settings "' + (& $toSlash $settings) + '"'
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
     try {
-        $out = & $bash (& $toSlash $checker) '--settings' (& $toSlash $settings)
+        $proc.Start() | Out-Null
     }
     catch {
-        if (-not $Silent) {
-            Write-Host "[i] SummonAI Kit: registro del hook: unknown - fallo el verificador ($($_.Exception.Message))." -ForegroundColor DarkGray
-        }
+        & $decirUnknown "no se pudo lanzar el verificador ($($_.Exception.Message))"
         return
     }
-    if ($out) {
-        Write-Host (($out | Out-String).TrimEnd())
+
+    # Los dos streams se drenan en paralelo: leer uno hasta el final mientras el
+    # hijo llena el buffer del otro (~4KB) es un deadlock clasico.
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $null = $proc.StandardError.ReadToEndAsync()
+    $proc.StandardInput.Close()
+
+    if ($TimeoutSec -gt 0) {
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            # taskkill /T y no Kill(): mata tambien lo que cuelgue del proceso
+            # que lanzamos (PS 5.1 no tiene Kill($true)).
+            #
+            # LIMITE MEDIDO Y DECLARADO (2026-08-10): un nieto lanzado por bash
+            # de Git for Windows puede quedar HUERFANO -- medido, su padre ya
+            # no existe cuando llega el kill, porque MSYS2 interpone su propia
+            # capa de procesos -- y entonces ningun barrido por parentesco lo
+            # alcanza. Ese huerfano sigue reteniendo los handles de stdout que
+            # heredo, asi que quien LEE nuestra salida puede seguir esperando
+            # aunque este script ya haya terminado. Lo que el tope garantiza es
+            # lo que esta a nuestro alcance: dejar de esperar, decirlo, y salir.
+            # El resto lo acota el timeout del propio SessionStart (30 s).
+            # Cerrarlo del todo pedia Job Objects via P/Invoke, y ese costo no
+            # se paga en un script que corre en cada arranque para cubrir un
+            # cuelgue de un chequeo que tarda menos de un segundo.
+            try {
+                & taskkill.exe /T /F /PID $proc.Id 2>&1 | Out-Null
+            }
+            catch { }
+            if (-not $proc.HasExited) {
+                try { $proc.Kill() } catch { }
+            }
+            & $decirUnknown "el verificador no respondio en ${TimeoutSec}s y se lo corto"
+            return
+        }
+    }
+    else {
+        $proc.WaitForExit()
+    }
+
+    if ($proc.ExitCode -ne 0) {
+        # Su contrato es salir 0 SIEMPRE (fail-open). Que no lo cumpla significa
+        # que no fue el verificador el que hablo -- bash no encontro el archivo,
+        # el script esta roto, algo lo mato.
+        & $decirUnknown "el verificador salio $($proc.ExitCode)"
+        return
+    }
+
+    $out = $stdoutTask.Result
+    if (-not [string]::IsNullOrWhiteSpace($out)) {
+        Write-Host $out.TrimEnd()
     }
 }
 
@@ -822,6 +910,6 @@ if (-not $Quiet) {
     }
 }
 
-Invoke-RegistrationCheck -CheckerPath $RegistrationCheck -Silent:$Quiet
+Invoke-RegistrationCheck -CheckerPath $RegistrationCheck -TimeoutSec $RegistrationTimeoutSec
 
 exit 0

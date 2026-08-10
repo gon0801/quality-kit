@@ -939,8 +939,22 @@ function Invoke-SaikitGateHeal {
     $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
     $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.StandardInput.Close()
-    $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
+    # WaitForExit(ms) y no WaitForExit(): el segundo espera ADEMAS a que los
+    # streams redirigidos lleguen a EOF, asi que un descendiente huerfano que
+    # todavia retenga el handle de stdout haria medir la vida del huerfano en
+    # vez de la del proceso. ExitSeconds tiene que medir cuanto tardo en
+    # terminar el SCRIPT, que es lo unico que su propio timeout puede
+    # garantizar (ver TEST GROUP 3p).
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $exited = $proc.WaitForExit(180000)
+    $sw.Stop()
+    if (-not $exited) { try { $proc.Kill() } catch { } }
+    return [PSCustomObject]@{
+        Stdout      = $stdoutTask.Result
+        Stderr      = $stderrTask.Result
+        ExitCode    = $proc.ExitCode
+        ExitSeconds = $sw.Elapsed.TotalSeconds
+    }
 }
 
 # Hook sintetico minimo que contiene las tres anclas que el parche busca.
@@ -1745,6 +1759,55 @@ if (Test-Path -LiteralPath $RealRegistrationCheck) {
 } else {
     Write-Host "SKIP: summonaikit-claude no esta en esta maquina ($RealRegistrationCheck) -- pasada oportunista del verificador real omitida (la bateria del kit no depende de otro repo)."
 }
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3p (cross-review codex 2026-08-10): el cableado del registro no puede fallar en SILENCIO ==='
+# Los tres casos de abajo salieron de una revision cruzada, y comparten una
+# raiz: el aviso `unknown` estaba condicionado a -Quiet, que es EXACTAMENTE el
+# modo con el que corre SessionStart. La politica de "no repetir avisos en cada
+# arranque" era correcta para el SKIP por propiedad -- que pasa en cada arranque
+# sano -- y equivocada para estos: un `unknown` solo aparece cuando algo YA esta
+# roto, asi que silenciarlo vuelve "no se pudo mirar" indistinguible de "todo
+# bien", que es justo lo que la Core Rule 2 del otro repo prohibe.
+
+# (g) verificador que muere sin decir nada: un exit code nativo != 0 NO lo
+# atrapa un try/catch de PowerShell, asi que sin mirarlo explicitamente el fallo
+# se pierde entero.
+$fakeCheckDead = Join-Path $fakeCheckDir 'dead.sh'
+Write-Utf8NoBomFile -Path $fakeCheckDead -Content "#!/usr/bin/env bash`nexit 3`n"
+$regHomeG = New-HealHomeWithSettings -Name 'fake-home-heal-reg-g' -SettingsJson $settingsWithoutHook
+$rRegG = Invoke-SaikitGateHeal -FakeHome $regHomeG -ExtraArgs @('-RegistrationCheck', $fakeCheckDead)
+Assert-True ($rRegG.Stdout -match 'unknown') 'a checker that exits non-zero with no output is reported as unknown -- a native exit code never raises, so not looking at it loses the failure entirely' "stdout=$($rRegG.Stdout)"
+Assert-True ($rRegG.Stdout -notmatch 'REGISTRO DEL HOOK INCOMPLETO') 'the dead checker still never claims the registration is absent'
+Assert-True ($rRegG.ExitCode -eq 0) 'a dead checker does not change the heal exit code' "exit=$($rRegG.ExitCode)"
+
+# (h) verificador colgado: este script corre en CADA SessionStart. Antes de
+# este cambio no lanzaba ningun proceso externo; ahora si, y un cuelgue ahi se
+# come el presupuesto del arranque. Mismo motivo por el que cross-review.ps1
+# tiene -TimeoutSec desde un cuelgue real (2026-07-05).
+$fakeCheckHang = Join-Path $fakeCheckDir 'hang.sh'
+Write-Utf8NoBomFile -Path $fakeCheckHang -Content "#!/usr/bin/env bash`nsleep 20`n"
+$regHomeH = New-HealHomeWithSettings -Name 'fake-home-heal-reg-h' -SettingsJson $settingsWithoutHook
+$rRegH = Invoke-SaikitGateHeal -FakeHome $regHomeH -ExtraArgs @('-RegistrationCheck', $fakeCheckHang, '-RegistrationTimeoutSec', '3')
+# Se mide cuanto tarda en TERMINAR EL SCRIPT, no cuanto tarda en cerrarse su
+# stdout. La diferencia no es cosmetica y esta medida: un `sleep` lanzado por el
+# bash de Git for Windows queda HUERFANO (su padre ya no existe cuando llega el
+# kill, porque MSYS2 interpone su propia capa), ningun barrido por parentesco lo
+# alcanza, y sigue reteniendo el handle de stdout que heredo. Ese limite esta
+# declarado en el script y acotado por el timeout del propio SessionStart; lo
+# que el tope de este script SI garantiza --dejar de esperar, decirlo y salir--
+# es lo que este caso mide. Margen ancho (10 s contra un tope de 3) porque lo
+# que tiene que distinguir es "corto" de "espero el sleep entero", no medir
+# latencia de arranque de procesos en una maquina cargada.
+Assert-True ($rRegH.ExitSeconds -lt 10) 'a hung checker does not hold the heal itself hostage -- it stops waiting, says so, and exits, instead of riding out the full hang' "exitSeconds=$([math]::Round($rRegH.ExitSeconds,1))s"
+Assert-True ($rRegH.Stdout -match 'unknown') 'the killed checker is reported as unknown, not silently dropped' "stdout=$($rRegH.Stdout)"
+Assert-True ($rRegH.ExitCode -eq 0) 'a hung checker does not change the heal exit code either' "exit=$($rRegH.ExitCode)"
+
+# (i) el caso que hace a los otros dos importar: SessionStart corre con -Quiet.
+$regHomeI = New-HealHomeWithSettings -Name 'fake-home-heal-reg-i' -SettingsJson $settingsWithoutHook
+$rRegI = Invoke-SaikitGateHeal -FakeHome $regHomeI -ExtraArgs @('-Quiet', '-RegistrationCheck', (Join-Path $fakeCheckDir 'no-existe.sh'))
+Assert-True ($rRegI.Stdout -match 'unknown') 'the unknown is reported UNDER -Quiet too -- that is the mode SessionStart actually uses, and hiding it there makes "could not look" indistinguishable from "all good"' "stdout=$($rRegI.Stdout)"
+Assert-True ($rRegI.Stdout -notmatch 'saltado, lo maneja') '-Quiet still silences the ownership-skip line, which IS the normal state of every startup once the hook is adopted' "stdout=$($rRegI.Stdout)"
 
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE
