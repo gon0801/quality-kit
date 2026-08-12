@@ -1780,10 +1780,12 @@ Write-Host '=== TEST GROUP 3p (cross-review codex 2026-08-10): el cableado del r
 # Los tres casos de abajo salieron de una revision cruzada, y comparten una
 # raiz: el aviso `unknown` estaba condicionado a -Quiet, que es EXACTAMENTE el
 # modo con el que corre SessionStart. La politica de "no repetir avisos en cada
-# arranque" era correcta para el SKIP por propiedad -- que pasa en cada arranque
-# sano -- y equivocada para estos: un `unknown` solo aparece cuando algo YA esta
-# roto, asi que silenciarlo vuelve "no se pudo mirar" indistinguible de "todo
-# bien", que es justo lo que la Core Rule 2 del otro repo prohibe.
+# arranque" era correcta para el SKIP por propiedad -- que antes pasaba en cada
+# arranque sano (.claude, marcado, saltado) y hoy casi nunca (tras la Task 4.1
+# .claude no se itera y ningun target restante porta marcador) -- y equivocada
+# para estos: un `unknown` solo aparece cuando algo YA esta roto, asi que
+# silenciarlo vuelve "no se pudo mirar" indistinguible de "todo bien", que es
+# justo lo que la Core Rule 2 del otro repo prohibe.
 
 # (g) verificador que muere sin decir nada: un exit code nativo != 0 NO lo
 # atrapa un try/catch de PowerShell, asi que sin mirarlo explicitamente el fallo

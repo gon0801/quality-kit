@@ -652,12 +652,14 @@ $reviewNoticeCoreAnchors = @(
 # el gate no esta corriendo en alguna fase, y eso no es ruido de exito.
 #
 # NINGUN `unknown` de aca se calla bajo -Quiet (cross-review codex, 2026-08-10).
-# La politica de "no repetir avisos en cada arranque" vale para el SKIP por
-# propiedad, que pasa en cada arranque SANO; estos avisos son lo contrario --
-# solo aparecen cuando algo ya se rompio (el verificador desaparecio, no hay
-# bash, se colgo, murio). Silenciarlos justo en -Quiet, que es el modo con el
-# que corre SessionStart, volveria "no se pudo mirar" indistinguible de "todo
-# bien": exactamente lo que la Core Rule 2 del otro repo prohibe.
+# La politica de "no repetir avisos en cada arranque" vale para lo que SE REPITE
+# en un arranque SANO (antes el SKIP por propiedad de .claude; hoy, poco -- tras
+# la Task 4.1 .claude no se itera y ningun target restante porta marcador);
+# estos avisos son lo contrario -- solo aparecen cuando algo ya se rompio (el
+# verificador desaparecio, no hay bash, se colgo, murio). Silenciarlos justo en
+# -Quiet, que es el modo con el que corre SessionStart, volveria "no se pudo
+# mirar" indistinguible de "todo bien": exactamente lo que la Core Rule 2 del
+# otro repo prohibe.
 # ============================================================================
 function Invoke-RegistrationCheck {
     param([string]$CheckerPath, [int]$TimeoutSec = 15)
