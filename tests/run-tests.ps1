@@ -931,7 +931,8 @@ function Invoke-SaikitGateHeal {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
-    # Home falso: el script real toca ~/.claude, ~/.codex, ~/.cursor y ~/.agents.
+    # Home falso: el script real toca ~/.codex, ~/.cursor y ~/.agents (.claude
+    # dejo de ser target en la Task 4.1: lo instala entero summonaikit-claude).
     $psi.EnvironmentVariables['USERPROFILE'] = $FakeHome
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
@@ -984,19 +985,19 @@ record_tool_evidence() {
 
 # Caso sano: una sola vez cada ancla -> parcha.
 $healHomeOk = Join-Path $TestFixturesDir 'fake-home-heal-ok'
-New-Item -ItemType Directory -Path (Join-Path $healHomeOk '.claude\hooks') -Force | Out-Null
-Write-Utf8NoBomFile -Path (Join-Path $healHomeOk '.claude\hooks\summonaikit-harness.sh') -Content $anchorBlock
+New-Item -ItemType Directory -Path (Join-Path $healHomeOk '.cursor\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeOk '.cursor\hooks\summonaikit-harness.sh') -Content $anchorBlock
 $rHealOk = Invoke-SaikitGateHeal -FakeHome $healHomeOk
-$patchedOk = Read-TextFile -Path (Join-Path $healHomeOk '.claude\hooks\summonaikit-harness.sh')
+$patchedOk = Read-TextFile -Path (Join-Path $healHomeOk '.cursor\hooks\summonaikit-harness.sh')
 Assert-True ($patchedOk -match 'SAIKIT-SENTINEL-GATE') 'sanity: a hook with each anchor exactly once does get patched'
 Assert-True ($rHealOk.ExitCode -eq 0) 'saikit-gate-heal exits 0 on the healthy case (fail-open by design)' "exit=$($rHealOk.ExitCode)"
 
 # Caso roto: el ancla A duplicada -> NO debe parchar, y debe decirlo.
 $healHomeDup = Join-Path $TestFixturesDir 'fake-home-heal-dup'
-New-Item -ItemType Directory -Path (Join-Path $healHomeDup '.claude\hooks') -Force | Out-Null
-Write-Utf8NoBomFile -Path (Join-Path $healHomeDup '.claude\hooks\summonaikit-harness.sh') -Content ($anchorBlock -replace 'MAX_CYCLES=2', "MAX_CYCLES=2`nMAX_CYCLES=2")
+New-Item -ItemType Directory -Path (Join-Path $healHomeDup '.cursor\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeDup '.cursor\hooks\summonaikit-harness.sh') -Content ($anchorBlock -replace 'MAX_CYCLES=2', "MAX_CYCLES=2`nMAX_CYCLES=2")
 $rHealDup = Invoke-SaikitGateHeal -FakeHome $healHomeDup
-$afterDup = Read-TextFile -Path (Join-Path $healHomeDup '.claude\hooks\summonaikit-harness.sh')
+$afterDup = Read-TextFile -Path (Join-Path $healHomeDup '.cursor\hooks\summonaikit-harness.sh')
 Assert-True ($afterDup -notmatch 'SAIKIT-SENTINEL-GATE') 'a duplicated anchor is NOT patched -- String.Replace would have injected the block twice'
 Assert-True ($rHealDup.Stdout -match 'ANCLAS-CAMBIARON') 'the duplicated anchor is reported loudly instead of failing silently'
 Assert-True ($rHealDup.Stdout -match 'A=2') 'the report names which anchor and how many times it appeared'
@@ -1021,10 +1022,10 @@ Write-Host '=== TEST GROUP 3l: the two patches stay independent -- broken anchor
 # GROUP 3k above) but NONE of the review-notice anchors (no write_state body,
 # no subagent-record block, etc.) -- sentinel should still patch cleanly.
 $healHomeNoRn = Join-Path $TestFixturesDir 'fake-home-heal-no-rn'
-New-Item -ItemType Directory -Path (Join-Path $healHomeNoRn '.claude\hooks') -Force | Out-Null
-Write-Utf8NoBomFile -Path (Join-Path $healHomeNoRn '.claude\hooks\summonaikit-harness.sh') -Content $anchorBlock
+New-Item -ItemType Directory -Path (Join-Path $healHomeNoRn '.cursor\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeNoRn '.cursor\hooks\summonaikit-harness.sh') -Content $anchorBlock
 $rHealNoRn = Invoke-SaikitGateHeal -FakeHome $healHomeNoRn
-$afterNoRn = Read-TextFile -Path (Join-Path $healHomeNoRn '.claude\hooks\summonaikit-harness.sh')
+$afterNoRn = Read-TextFile -Path (Join-Path $healHomeNoRn '.cursor\hooks\summonaikit-harness.sh')
 Assert-True ($afterNoRn -match 'SAIKIT-SENTINEL-GATE') 'sentinel still patches a fixture that has its own anchors but none of review-notice''s' "content=$afterNoRn"
 Assert-True ($afterNoRn -notmatch 'SAIKIT-REVIEW-NOTICE') 'review-notice correctly did NOT apply to a fixture missing all its anchors (0 occurrences, not a false match)'
 Assert-True ($rHealNoRn.Stdout -match 'ANCLAS-CAMBIARON') 'the missing review-notice anchors are still reported (RN-A=0 etc), not silently ignored' "stdout=$($rHealNoRn.Stdout)"
@@ -1096,10 +1097,10 @@ HARNESS_CONTEXT
 }
 '@
 $healHomeRnOnly = Join-Path $TestFixturesDir 'fake-home-heal-rn-only'
-New-Item -ItemType Directory -Path (Join-Path $healHomeRnOnly '.claude\hooks') -Force | Out-Null
-Write-Utf8NoBomFile -Path (Join-Path $healHomeRnOnly '.claude\hooks\summonaikit-harness.sh') -Content $rnOnlyFixture
+New-Item -ItemType Directory -Path (Join-Path $healHomeRnOnly '.cursor\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $healHomeRnOnly '.cursor\hooks\summonaikit-harness.sh') -Content $rnOnlyFixture
 $rHealRnOnly = Invoke-SaikitGateHeal -FakeHome $healHomeRnOnly
-$afterRnOnly = Read-TextFile -Path (Join-Path $healHomeRnOnly '.claude\hooks\summonaikit-harness.sh')
+$afterRnOnly = Read-TextFile -Path (Join-Path $healHomeRnOnly '.cursor\hooks\summonaikit-harness.sh')
 Assert-True ($afterRnOnly -match 'SAIKIT-REVIEW-NOTICE') 'review-notice still patches a fixture that has its own anchors intact but a broken sentinel anchor' "content=$afterRnOnly"
 Assert-True ($afterRnOnly -notmatch 'SAIKIT-SENTINEL-GATE') 'sentinel correctly did NOT apply to a fixture whose own anchor is duplicated'
 Assert-True ($rHealRnOnly.Stdout -match 'ANCLAS-CAMBIARON') 'the duplicated sentinel anchor (A=2) is still reported' "stdout=$($rHealRnOnly.Stdout)"
@@ -1156,7 +1157,13 @@ function Get-BashExeForTests {
     return $null
 }
 $RnBashExe = Get-BashExeForTests
-$LiveClaudeHookForRnTests = Join-Path $env:USERPROFILE '.claude\hooks\summonaikit-harness.sh'
+# La pasada live del hook GENeRICO (claude-shape) apunta al .cursor REAL, no al
+# .claude: desde la Task 4.1 .claude no es target del heal (lo instala entero
+# summonaikit-claude, con marcador de propiedad y los fixes Task 3.x adentro),
+# asi que ya no es un sujeto valido para verificar que el heal PARCHEA un hook
+# vendor real. .cursor/.agents comparten la shape y son vendor (sin marcador, sin
+# los fixes 3.x), exactamente lo que el fixture congelado representa.
+$LiveClaudeHookForRnTests = Join-Path $env:USERPROFILE '.cursor\hooks\summonaikit-harness.sh'
 $LiveCodexHookForRnTests = Join-Path $env:USERPROFILE '.codex\hooks\summonaikit-harness.sh'
 
 if ($null -eq $RnBashExe) {
@@ -1277,9 +1284,13 @@ Retro: none
 
         $slug = ($Label -replace '[^A-Za-z0-9]+', '-').Trim('-').ToLower()
         $rnHome = Join-Path $TestFixturesDir "review-notice-home-$slug"
-        New-Item -ItemType Directory -Path (Join-Path $rnHome '.claude\hooks') -Force | Out-Null
+        # El hook GENeRICO (claude-shape, $claudeHook) vive a .cursor y no a .claude
+        # desde la Task 4.1: .claude ya no es target del heal. La shape es la misma
+        # (.claude/.cursor/.agents comparten estructura); el NOMBRE $claudeHook
+        # denota la shape, no el path de instalacion.
+        New-Item -ItemType Directory -Path (Join-Path $rnHome '.cursor\hooks') -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $rnHome '.codex\hooks') -Force | Out-Null
-        $claudeHook = Join-Path $rnHome '.claude\hooks\summonaikit-harness.sh'
+        $claudeHook = Join-Path $rnHome '.cursor\hooks\summonaikit-harness.sh'
         $codexHook = Join-Path $rnHome '.codex\hooks\summonaikit-harness.sh'
         Copy-Item -LiteralPath $ClaudeHookSource -Destination $claudeHook -Force
         Copy-Item -LiteralPath $CodexHookSource -Destination $codexHook -Force
@@ -1288,10 +1299,10 @@ Retro: none
         Assert-True ($heal1.Stdout -notmatch 'ANCLAS-CAMBIARON') "[$Label] setup: healing the hook copies reports NO ANCLAS-CAMBIARON on either variant -- regression guard: the .codex variant is structurally different (harness_context_lite, resolve_state_paths, ROLE FALLBACK branches) and its anchors could silently stop fitting on a kit update" "stdout=$($heal1.Stdout)"
         $patchedClaudeRn = Read-TextFile -Path $claudeHook
         $patchedCodexRn = Read-TextFile -Path $codexHook
-        Assert-True ($patchedClaudeRn -match 'SAIKIT-REVIEW-NOTICE v1') "[$Label] setup: the .claude copy carries the SAIKIT-REVIEW-NOTICE v1 marker after healing"
+        Assert-True ($patchedClaudeRn -match 'SAIKIT-REVIEW-NOTICE v1') "[$Label] setup: the generic (claude-shape) copy at .cursor carries the SAIKIT-REVIEW-NOTICE v1 marker after healing"
         Assert-True ($patchedCodexRn -match 'SAIKIT-REVIEW-NOTICE v1') "[$Label] setup: the .codex copy ALSO carries the SAIKIT-REVIEW-NOTICE v1 marker after healing"
         & $RnBashExe -n $claudeHook 2>&1 | Out-Null
-        Assert-True ($LASTEXITCODE -eq 0) "[$Label] setup: the patched .claude copy is still syntactically valid bash"
+        Assert-True ($LASTEXITCODE -eq 0) "[$Label] setup: the patched generic (claude-shape) copy is still syntactically valid bash"
         & $RnBashExe -n $codexHook 2>&1 | Out-Null
         Assert-True ($LASTEXITCODE -eq 0) "[$Label] setup: the patched .codex copy is still syntactically valid bash"
 
@@ -1302,7 +1313,7 @@ Retro: none
         Invoke-SaikitGateHeal -FakeHome $rnHome | Out-Null
         $claudeAfter2nd = Read-TextFile -Path $claudeHook
         $codexAfter2nd = Read-TextFile -Path $codexHook
-        Assert-True ([string]::Equals($claudeAfter1st, $claudeAfter2nd, [System.StringComparison]::Ordinal)) "[$Label] a second saikit-gate-heal.ps1 run leaves the .claude hook byte-identical (idempotent)"
+        Assert-True ([string]::Equals($claudeAfter1st, $claudeAfter2nd, [System.StringComparison]::Ordinal)) "[$Label] a second saikit-gate-heal.ps1 run leaves the generic (claude-shape) copy byte-identical (idempotent)"
         Assert-True ([string]::Equals($codexAfter1st, $codexAfter2nd, [System.StringComparison]::Ordinal)) "[$Label] a second saikit-gate-heal.ps1 run leaves the .codex hook byte-identical too"
 
         Write-Host ''
@@ -1541,18 +1552,18 @@ Retro: none
     Invoke-OpportunisticLiveHookPass -ClaudeHookPath $LiveClaudeHookForRnTests -CodexHookPath $LiveCodexHookForRnTests -Label 'live install' | Out-Null
 
     # ---- (e): the opportunistic pass correctly SKIPS (never fails) on a
-    # simulated machine that has .claude installed but NOT .codex -- the
-    # exact real-world gap (ALTO 2) that used to turn the whole group red. A
-    # synthetic profile is enough here: only its PRESENCE/ABSENCE matters to
-    # the skip logic under test, not its content.
+    # simulated machine that has the generic (claude-shape) hook installed at
+    # .cursor but NOT .codex -- the exact real-world gap (ALTO 2) that used to
+    # turn the whole group red. A synthetic profile is enough here: only its
+    # PRESENCE/ABSENCE matters to the skip logic under test, not its content.
     Write-Host ''
     Write-Host '=== TEST GROUP 3m (e): the opportunistic live-hook pass skips cleanly (never fails) on a simulated machine without .codex installed ==='
     $noCodexProfile = Join-Path $TestFixturesDir 'simulated-no-codex-profile'
-    New-Item -ItemType Directory -Path (Join-Path $noCodexProfile '.claude\hooks') -Force | Out-Null
-    Copy-Item -LiteralPath $FrozenClaudeHook -Destination (Join-Path $noCodexProfile '.claude\hooks\summonaikit-harness.sh') -Force
+    New-Item -ItemType Directory -Path (Join-Path $noCodexProfile '.cursor\hooks') -Force | Out-Null
+    Copy-Item -LiteralPath $FrozenClaudeHook -Destination (Join-Path $noCodexProfile '.cursor\hooks\summonaikit-harness.sh') -Force
     # Deliberately NO .codex\hooks\summonaikit-harness.sh anywhere under here.
     $failCountBeforeNoCodex = $script:FailCount
-    $ranNoCodex = Invoke-OpportunisticLiveHookPass -ClaudeHookPath (Join-Path $noCodexProfile '.claude\hooks\summonaikit-harness.sh') -CodexHookPath (Join-Path $noCodexProfile '.codex\hooks\summonaikit-harness.sh') -Label 'simulated machine without .codex'
+    $ranNoCodex = Invoke-OpportunisticLiveHookPass -ClaudeHookPath (Join-Path $noCodexProfile '.cursor\hooks\summonaikit-harness.sh') -CodexHookPath (Join-Path $noCodexProfile '.codex\hooks\summonaikit-harness.sh') -Label 'simulated machine without .codex'
     Assert-True ($ranNoCodex -eq $false) '(e) the opportunistic pass correctly reports it was SKIPPED (not run) when .codex is missing, instead of hard-failing' "ranNoCodex=$ranNoCodex"
     Assert-True ($script:FailCount -eq $failCountBeforeNoCodex) '(e) simulating a machine without .codex adds ZERO new failures to the suite -- this is the exact real-world gap (ALTO 2) that used to turn TEST GROUP 3m red for an unrelated reason' "before=$failCountBeforeNoCodex after=$($script:FailCount)"
 
@@ -1575,17 +1586,19 @@ Retro: none
 Write-Host ''
 Write-Host '=== TEST GROUP 3n: a hook that carries the summonaikit-claude ownership marker is SKIPPED, not patched ==='
 # POR QUE: el repo summonaikit-claude adopto el hook de .claude por REEMPLAZO
-# (escribe el archivo entero desde su propia fuente). Este script lo parcha por
-# ANCLAS. Dos escritores en SessionStart sobre la MISMA ruta, con modelos
-# distintos, pueden dejar el archivo doblemente parchado o truncado. La costura
-# acordada es por host: quien lleva el marcador de propiedad se saltea aca.
+# (escribe el archivo entero desde su propia fuente) y desde la Task 4.1 .claude
+# dejo de ser target del heal. El skip por marcador queda como RED DE SEGURIDAD:
+# si un .codex/.cursor/.agents llegara a portar el marcador (por una copia
+# manual, p.ej.), se saltea entero para no pisar al otro escritor. En produccion
+# ningun target restante lo porta, asi que este grupo es el que mantiene viva la
+# cobertura del mecanismo -- sintetico, declarado, pero necesario.
 #
 # El criterio de deteccion es DELIBERADAMENTE mas ancho que el del instalador
 # del otro repo: ese exige el marcador en la linea 2 exacta y trata cualquier
 # otra posicion como "desconocido, no tocar"; este saltea ante el marcador en
-# CUALQUIER linea. Los dos convergen en no escribir, que es lo unico que
-# importa para no pisarse -- y ante una senal de propiedad ambigua, abstenerse
-# es la unica opcion segura para el escritor por anclas.
+# CUALQUIER linea. Los dos convergen en no escribir -- y ante una senal de
+# propiedad ambigua, abstenerse es la unica opcion segura para el escritor por
+# anclas.
 $OwnershipMarkerLine = '# SAIKIT-CLAUDE-OWNED summonaikit-claude 1.0.0'
 
 function New-MarkedHookText {
@@ -1596,72 +1609,74 @@ function New-MarkedHookText {
     return ((@($head) + @($OwnershipMarkerLine) + @($tail)) -join "`n")
 }
 
-# Fixture: el hook del vendor congelado MAS el marcador en la linea 2 -- o sea,
-# exactamente la forma del archivo que summonaikit-claude instala. Es el
-# fixture que discrimina: sin el skip, este archivo se parcharia (trae todas
-# las anclas de SAIKIT-REVIEW-NOTICE intactas y todavia no ese parche); con el
-# skip, queda igual byte a byte.
+# Fixture: el hook .codex congelado MAS el marcador en la linea 2. Es el
+# fixture que discrimina: sin el skip, este archivo se parcharia (el .codex
+# congelado trae las anclas de SAIKIT-REVIEW-NOTICE intactas y todavia no ese
+# parche); con el skip, queda igual byte a byte. El marcador va sobre .codex (un
+# target restante) porque .claude ya no se itera desde la Task 4.1 -- el
+# mecanismo se ejerce sobre un target que el heal realmente toca.
 #
 # El parche que discrimina aca es REVIEW-NOTICE y no SENTINEL: el hook
-# congelado ya venia con el sentinel aplicado (es una copia de un hook real,
-# no de uno pristino), asi que buscar el marcador del sentinel despues del heal
-# daria verde con o sin el skip. El sentinel tiene su propio caso discriminante
-# mas abajo, sobre el fixture sintetico que no trae ninguno de los dos.
+# congelado ya venia con el sentinel aplicado (es una copia de un hook real),
+# asi que buscar el marcador del sentinel despues del heal daria verde con o sin
+# el skip. El sentinel tiene su propio caso discriminante mas abajo, sobre el
+# fixture sintetico que no trae ninguno de los dos.
 $healHomeOwned = Join-Path $TestFixturesDir 'fake-home-heal-owned'
-New-Item -ItemType Directory -Path (Join-Path $healHomeOwned '.claude\hooks') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $healHomeOwned '.codex\hooks') -Force | Out-Null
-$ownedClaudeHook = Join-Path $healHomeOwned '.claude\hooks\summonaikit-harness.sh'
-$ownedCodexHook = Join-Path $healHomeOwned '.codex\hooks\summonaikit-harness.sh'
-Write-Utf8NoBomFile -Path $ownedClaudeHook -Content (New-MarkedHookText -Text (Read-TextFile -Path $FrozenClaudeHook))
-# El .codex del MISMO home queda SIN marcador: el skip tiene que ser por
+New-Item -ItemType Directory -Path (Join-Path $healHomeOwned '.cursor\hooks') -Force | Out-Null
+$markedCodexHook = Join-Path $healHomeOwned '.codex\hooks\summonaikit-harness.sh'
+$unmarkedCursorHook = Join-Path $healHomeOwned '.cursor\hooks\summonaikit-harness.sh'
+Write-Utf8NoBomFile -Path $markedCodexHook -Content (New-MarkedHookText -Text (Read-TextFile -Path $FrozenCodexHook))
+# El .cursor del MISMO home queda SIN marcador: el skip tiene que ser por
 # archivo, no por corrida.
-Copy-Item -LiteralPath $FrozenCodexHook -Destination $ownedCodexHook -Force
+Copy-Item -LiteralPath $FrozenClaudeHook -Destination $unmarkedCursorHook -Force
 
-$ownedHashBefore = (Get-FileHash -LiteralPath $ownedClaudeHook -Algorithm SHA256).Hash
-$codexHashBefore = (Get-FileHash -LiteralPath $ownedCodexHook -Algorithm SHA256).Hash
+$markedHashBefore = (Get-FileHash -LiteralPath $markedCodexHook -Algorithm SHA256).Hash
+$cursorHashBefore = (Get-FileHash -LiteralPath $unmarkedCursorHook -Algorithm SHA256).Hash
 $rHealOwned = Invoke-SaikitGateHeal -FakeHome $healHomeOwned
-$ownedHashAfter = (Get-FileHash -LiteralPath $ownedClaudeHook -Algorithm SHA256).Hash
-$codexHashAfter = (Get-FileHash -LiteralPath $ownedCodexHook -Algorithm SHA256).Hash
-$ownedAfter = Read-TextFile -Path $ownedClaudeHook
-$codexAfterOwned = Read-TextFile -Path $ownedCodexHook
+$markedHashAfter = (Get-FileHash -LiteralPath $markedCodexHook -Algorithm SHA256).Hash
+$cursorHashAfter = (Get-FileHash -LiteralPath $unmarkedCursorHook -Algorithm SHA256).Hash
+$markedAfter = Read-TextFile -Path $markedCodexHook
+$cursorAfterOwned = Read-TextFile -Path $unmarkedCursorHook
 
-Assert-True ($ownedHashAfter -eq $ownedHashBefore) 'a hook carrying the ownership marker is left byte-identical -- the other repo owns that file and rewrites it whole' "before=$ownedHashBefore after=$ownedHashAfter"
-Assert-True ($ownedAfter -notmatch 'SAIKIT-REVIEW-NOTICE') 'the skipped hook did NOT get the review-notice patch injected -- it would have (this fixture has all seven RN anchors intact and none of that patch yet)'
-Assert-True ($rHealOwned.Stdout -match 'saltado') 'the skip is REPORTED, not silent -- an operator must be able to see why .claude stopped being patched here' "stdout=$($rHealOwned.Stdout)"
+Assert-True ($markedHashAfter -eq $markedHashBefore) 'a hook carrying the ownership marker is left byte-identical -- a marked file is skipped whole, never rewritten by anchors' "before=$markedHashBefore after=$markedHashAfter"
+Assert-True ($markedAfter -notmatch 'SAIKIT-REVIEW-NOTICE') 'the skipped hook did NOT get the review-notice patch injected -- it would have (this fixture has the RN anchors intact and none of that patch yet)'
+Assert-True ($rHealOwned.Stdout -match 'saltado') 'the skip is REPORTED, not silent -- an operator must be able to see why a marked hook was left untouched' "stdout=$($rHealOwned.Stdout)"
 Assert-True ($rHealOwned.Stdout -match 'SAIKIT-CLAUDE-OWNED') 'the report names the marker it found, so the reason is diagnosable without reading this script'
-Assert-True ($rHealOwned.Stdout -notmatch 'ANCLAS-CAMBIARON') 'a skipped-by-ownership hook is NOT reported as a broken patch -- it is the expected steady state, not a failure' "stdout=$($rHealOwned.Stdout)"
+Assert-True ($rHealOwned.Stdout -notmatch 'ANCLAS-CAMBIARON') 'a skipped-by-ownership hook is NOT reported as a broken patch -- it is the expected skip state, not a failure' "stdout=$($rHealOwned.Stdout)"
 Assert-True ($rHealOwned.ExitCode -eq 0) 'the skip still exits 0 (fail-open: this script must never break a session start)' "exit=$($rHealOwned.ExitCode)"
 
-# El punto 2 de la DoD: los otros perfiles se siguen parchando igual que hoy.
-Assert-True ($codexHashAfter -ne $codexHashBefore) 'the UNMARKED .codex hook in the SAME run WAS rewritten -- the skip is per FILE, not per run' "before=$codexHashBefore after=$codexHashAfter"
-Assert-True ($codexAfterOwned -match 'SAIKIT-REVIEW-NOTICE') 'the unmarked .codex hook still gets the review-notice patch it was missing'
+# DoD punto 2: los otros perfiles (sin marcador) se siguen parcheando igual.
+Assert-True ($cursorHashAfter -ne $cursorHashBefore) 'the UNMARKED .cursor hook in the SAME run WAS rewritten -- the skip is per FILE, not per run' "before=$cursorHashBefore after=$cursorHashAfter"
+Assert-True ($cursorAfterOwned -match 'SAIKIT-REVIEW-NOTICE') 'the unmarked .cursor hook still gets the review-notice patch it was missing'
 
 # Idempotencia del skip: una segunda corrida tampoco lo toca.
 Invoke-SaikitGateHeal -FakeHome $healHomeOwned | Out-Null
-$ownedHash2nd = (Get-FileHash -LiteralPath $ownedClaudeHook -Algorithm SHA256).Hash
-Assert-True ($ownedHash2nd -eq $ownedHashBefore) 'a second heal run still leaves the owned hook byte-identical' "before=$ownedHashBefore after2nd=$ownedHash2nd"
+$markedHash2nd = (Get-FileHash -LiteralPath $markedCodexHook -Algorithm SHA256).Hash
+Assert-True ($markedHash2nd -eq $markedHashBefore) 'a second heal run still leaves the marked hook byte-identical' "before=$markedHashBefore after2nd=$markedHash2nd"
 
 # Marcador FUERA de la linea 2: sigue siendo una senal de propiedad, y ante una
 # senal ambigua el escritor por anclas se abstiene igual (el instalador del otro
-# repo hace lo simetrico: lo llama "desconocido" y tampoco escribe).
+# repo hace lo simetrico: lo llama "desconocido" y tampoco escribe). El fixture
+# va sobre .cursor (un target restante).
 #
 # Este fixture es ademas el caso discriminante del OTRO parche: $anchorBlock no
 # trae ninguno de los dos marcadores, asi que sin el skip se le inyectaria el
 # sentinel. Entre los dos fixtures de este grupo, cada parche tiene un caso que
 # lo mata.
 $healHomeOwnedLate = Join-Path $TestFixturesDir 'fake-home-heal-owned-late'
-New-Item -ItemType Directory -Path (Join-Path $healHomeOwnedLate '.claude\hooks') -Force | Out-Null
-$lateClaudeHook = Join-Path $healHomeOwnedLate '.claude\hooks\summonaikit-harness.sh'
+New-Item -ItemType Directory -Path (Join-Path $healHomeOwnedLate '.cursor\hooks') -Force | Out-Null
+$lateCursorHook = Join-Path $healHomeOwnedLate '.cursor\hooks\summonaikit-harness.sh'
 # Linea 3 y no cualquiera: es la linea EN BLANCO entre el ancla A y el ancla B,
 # el unico lugar de este fixture que esta fuera de la linea 2 y no parte ninguna
 # ancla. Medido: con el marcador en la linea 5 este caso quedaba adentro del
 # ancla B, y entonces sobrevivia a una mutacion del criterio "cualquier linea"
 # -> "solo la linea 2" por el motivo equivocado (el ancla rota, no el skip).
-Write-Utf8NoBomFile -Path $lateClaudeHook -Content (New-MarkedHookText -Text $anchorBlock -AtLine 3)
-$lateHashBefore = (Get-FileHash -LiteralPath $lateClaudeHook -Algorithm SHA256).Hash
+Write-Utf8NoBomFile -Path $lateCursorHook -Content (New-MarkedHookText -Text $anchorBlock -AtLine 3)
+$lateHashBefore = (Get-FileHash -LiteralPath $lateCursorHook -Algorithm SHA256).Hash
 $rHealLate = Invoke-SaikitGateHeal -FakeHome $healHomeOwnedLate
-$lateHashAfter = (Get-FileHash -LiteralPath $lateClaudeHook -Algorithm SHA256).Hash
-$lateAfter = Read-TextFile -Path $lateClaudeHook
+$lateHashAfter = (Get-FileHash -LiteralPath $lateCursorHook -Algorithm SHA256).Hash
+$lateAfter = Read-TextFile -Path $lateCursorHook
 Assert-True ($lateHashAfter -eq $lateHashBefore) 'the marker on a line OTHER than line 2 also skips -- ambiguous ownership is still ownership for a by-anchor writer' "before=$lateHashBefore after=$lateHashAfter"
 Assert-True ($lateAfter -notmatch 'SAIKIT-SENTINEL-GATE') 'the SENTINEL patch is skipped too -- this fixture carries neither marker, so it would have been patched without the skip'
 Assert-True ($rHealLate.Stdout -notmatch 'ANCLAS-CAMBIARON') 'the skip is evaluated BEFORE the anchor check -- this fixture has none of the review-notice anchors, and checking them first would raise a permanent false alarm about a file that is never going to be patched here' "stdout=$($rHealLate.Stdout)"
@@ -1805,9 +1820,43 @@ Assert-True ($rRegH.ExitCode -eq 0) 'a hung checker does not change the heal exi
 
 # (i) el caso que hace a los otros dos importar: SessionStart corre con -Quiet.
 $regHomeI = New-HealHomeWithSettings -Name 'fake-home-heal-reg-i' -SettingsJson $settingsWithoutHook
+# Hallazgo 1 de la cross-review del plan (codex): para que el -notmatch de abajo
+# no sea vacuo, hace falta un target MARCADO entre los que el heal aun itera
+# (.codex/.cursor/.agents). Sin el, la linea 'saltado, lo maneja' jamas se
+# generaria y -Quiet no tendria nada que silenciar; .claude ya no es target. El
+# skip SIN -Quiet se prueba en TEST GROUP 3n (alla la linea SI aparece).
+$markedForQuiet = Join-Path $regHomeI '.codex\hooks\summonaikit-harness.sh'
+New-Item -ItemType Directory -Path (Join-Path $regHomeI '.codex\hooks') -Force | Out-Null
+Write-Utf8NoBomFile -Path $markedForQuiet -Content (New-MarkedHookText -Text (Read-TextFile -Path $FrozenCodexHook))
 $rRegI = Invoke-SaikitGateHeal -FakeHome $regHomeI -ExtraArgs @('-Quiet', '-RegistrationCheck', (Join-Path $fakeCheckDir 'no-existe.sh'))
 Assert-True ($rRegI.Stdout -match 'unknown') 'the unknown is reported UNDER -Quiet too -- that is the mode SessionStart actually uses, and hiding it there makes "could not look" indistinguishable from "all good"' "stdout=$($rRegI.Stdout)"
-Assert-True ($rRegI.Stdout -notmatch 'saltado, lo maneja') '-Quiet still silences the ownership-skip line, which IS the normal state of every startup once the hook is adopted' "stdout=$($rRegI.Stdout)"
+Assert-True ($rRegI.Stdout -notmatch 'saltado, lo maneja') '-Quiet silences the ownership-skip line even when a marked target IS present (here .codex) -- non-vacuous: without -Quiet that line WOULD fire (proven in 3n), so this proves -Quiet suppresses it rather than there simply being nothing to suppress' "stdout=$($rRegI.Stdout)"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3q (Task 4.1): .claude ya no es target del heal -- los otros 3 perfiles SI se siguen parcheando ==='
+# DoD #3 de la Task 4.1: .claude deja de ser target (lo instala entero
+# summonaikit-claude, con marcador de propiedad y los dos parches adentro). El
+# heal ya no lo itera; los 3 perfiles restantes (.codex/.cursor/.agents) siguen
+# parcheandose igual. Caso discriminante: hoy (con .claude AUN como target) el
+# assert de .claude FALLA -- el heal le inyectaria el sentinel.
+$healHome41 = Join-Path $TestFixturesDir 'fake-home-task-4-1'
+foreach ($prof in @('.claude', '.codex', '.cursor', '.agents')) {
+    New-Item -ItemType Directory -Path (Join-Path $healHome41 (Join-Path $prof 'hooks')) -Force | Out-Null
+    Write-Utf8NoBomFile -Path (Join-Path $healHome41 (Join-Path $prof 'hooks\summonaikit-harness.sh')) -Content $anchorBlock
+}
+$claude41Path = Join-Path $healHome41 '.claude\hooks\summonaikit-harness.sh'
+$claude41Before = (Get-FileHash -LiteralPath $claude41Path -Algorithm SHA256).Hash
+$rHeal41 = Invoke-SaikitGateHeal -FakeHome $healHome41
+$claude41After = Read-TextFile -Path $claude41Path
+Assert-True ($rHeal41.ExitCode -eq 0) 'Task 4.1: el heal sigue saliendo 0 con .claude fuera del vector de targets' "exit=$($rHeal41.ExitCode)"
+# DoD #3, el assert discriminante: .claude NO se toca (ni contenido ni hash).
+Assert-True ($claude41After -notmatch 'SAIKIT-SENTINEL-GATE') 'Task 4.1 DoD #3: .claude ya no es target -- el heal NO le inyecta el sentinel' "content=$claude41After"
+Assert-True ((Get-FileHash -LiteralPath $claude41Path -Algorithm SHA256).Hash -eq $claude41Before) 'Task 4.1: el hook .claude queda byte-identical -- no se itera, no se reporta, no se toca' "before=$claude41Before after=$((Get-FileHash -LiteralPath $claude41Path -Algorithm SHA256).Hash)"
+# DoD #1: los 3 perfiles restantes SI se parchean igual que hoy.
+foreach ($prof in @('.codex', '.cursor', '.agents')) {
+    $patched41 = Read-TextFile -Path (Join-Path $healHome41 (Join-Path $prof 'hooks\summonaikit-harness.sh'))
+    Assert-True ($patched41 -match 'SAIKIT-SENTINEL-GATE') "Task 4.1 DoD #1: el perfil restante $prof SI recibe el sentinel -- los 3 perfiles siguen parcheandose igual" "profile=$prof content=$patched41"
+}
 
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE

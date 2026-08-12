@@ -49,24 +49,24 @@
   Vive en quality-kit (no en ~/.claude/hooks) justamente para que un install del
   kit no pueda borrarlo.
 
-  CONVIVENCIA CON summonaikit-claude (su Task 2.3)
+  CONVIVENCIA CON summonaikit-claude (su Task 2.3 + consolidacion Task 4.1)
   Ese repo adopto el hook de .claude y lo instala por REEMPLAZO: escribe el
-  archivo entero desde su propia fuente, que YA trae los dos parches adentro.
-  Este script lo escribe por ANCLAS. Dos escritores sobre la misma ruta en el
-  mismo SessionStart, con modelos distintos, pueden dejar el archivo doblemente
-  parchado o truncado.
+  archivo entero desde su propia fuente, que YA trae los dos parches adentro,
+  con el marcador de propiedad en la linea 2. Durante la adopcion (Task 2.3)
+  este script seguia iterando .claude como target y lo SALTEABA por el marcador
+  para no pisar al otro escritor. Dias en verde despues, la Task 4.1 retiro
+  .claude del vector $targets de abajo: ya no se itera, y la superficie de doble
+  escritor sobre la misma ruta deja de existir. .codex / .cursor / .agents si
+  siguen parcheando.
 
-  La costura es por host: cualquier hook que lleve el marcador de propiedad
-  (`# SAIKIT-CLAUDE-OWNED ...`) se SALTEA aca, entero, sin evaluar anclas. No
-  se pierde gate: la fuente de ese repo trae el sentinel y el aviso de revision
-  ya aplicados. .codex / .cursor / .agents no cambian en nada.
-
-  El criterio es a proposito mas ancho que el del instalador del otro repo: el
-  exige el marcador en la linea 2 exacta y trata cualquier otra posicion como
-  "desconocido, no tocar"; este saltea ante el marcador en CUALQUIER linea. Los
-  dos convergen en no escribir, que es lo unico que hace falta para no pisarse
-  -- y ante una senal de propiedad ambigua, abstenerse es la unica opcion segura
-  para el escritor por anclas.
+  El skip por marcador (`# SAIKIT-CLAUDE-OWNED ...`) se CONSERVA como red de
+  seguridad: si algun .codex/.cursor/.agents llegara a portar el marcador (por
+  ejemplo una copia manual), se saltea entero sin evaluar anclas. En produccion
+  ningun target restante lo porta, asi que $skippedOwned casi siempre queda
+  vacio -- lo que importa es que ante una senal de propiedad, el escritor por
+  anclas se abstiene. El criterio sigue siendo mas ancho que el del instalador
+  del otro repo (marcador en CUALQUIER linea, no solo la 2): ante una senal
+  ambigua, abstenerse es la unica opcion segura.
 
   REGISTRO DEL HOOK (Task 0.3 del mismo repo, cableada aca)
   Todo lo que este script mira es CONTENIDO. El modo de falla mas silencioso es
@@ -805,7 +805,12 @@ function Invoke-RegistrationCheck {
     }
 }
 
-$targets = @('.claude', '.codex', '.cursor', '.agents') |
+# .claude ya no es target desde la Task 4.1: summonaikit-claude lo adopto por
+# REEMPLAZO (instala el archivo entero, con marcador de propiedad y los dos
+# parches adentro -- ver CONVIVENCIA arriba). Sacarlo de aca vuelve explicita la
+# no-escritura y elimina la superficie de doble escritor en cada SessionStart.
+# .codex / .cursor / .agents SI siguen parcheandose por anclas.
+$targets = @('.codex', '.cursor', '.agents') |
     ForEach-Object { Join-Path $env:USERPROFILE (Join-Path $_ 'hooks\summonaikit-harness.sh') }
 
 $results = @()
@@ -899,10 +904,13 @@ elseif (-not $Quiet -and ($changed -gt 0 -or $skippedOwned.Count -gt 0)) {
 # las columnas al ancho de la consola y la linea del marcador -- que es el dato
 # diagnostico -- es justo lo que se perderia.
 #
-# Solo sin -Quiet, y esa es una decision: una vez adoptado el hook, el salto es
-# el estado NORMAL de cada arranque, y una linea informativa repetida en cada
-# SessionStart es exactamente como se entrena a un operador a ignorar los
-# avisos. A mano o con -Check se ve entero. Lo que NO depende de -Quiet es un
+# Solo sin -Quiet. Antes de la Task 4.1 el salto era el estado NORMAL de cada
+# arranque (.claude, marcado, se saltaba en cada SessionStart sano); desde que
+# .claude dejo de ser target, el skip ya no es el estado normal -- ningun target
+# restante porta el marcador en produccion, asi que esto casi nunca se dispara.
+# Se conserva la politica de callarlo bajo -Quiet de todos modos: si algun dia
+# un .codex/.cursor/.agents marcado lo dispara, repetirlo en cada arranque seria
+# ruido. A mano o con -Check se ve entero. Lo que NO depende de -Quiet es un
 # parche sin aplicar: eso sigue gritando arriba.
 if (-not $Quiet) {
     foreach ($s in $skippedOwned) {
