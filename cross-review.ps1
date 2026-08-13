@@ -204,7 +204,20 @@ function Build-ReviewPrompt {
     # codigo fuera del diff. Este candidato corre PARADO EN EL REPO (el
     # working directory es el repo real), asi que puede y debe verificar
     # antes de afirmar; solo si no puede, degrada el hallazgo a VERIFICAR:.
-    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. Lee el archivo '$DiffFilePath' (contiene un diff de git: $Label, del repositorio '$RepoName') y revisalo. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes en ciego -- tu directorio de trabajo ES el repositorio real: verificalo primero leyendo/grepeando el archivo en cuestion. Si no podes verificarlo, reportalo con el prefijo 'VERIFICAR:' en vez de afirmarlo como bug, diciendo exactamente que habria que confirmar. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
+    #
+    # La clausula "NO uses skills ni workflows" nace de un fallo REAL y medido
+    # (2026-08-13, repo summonaikit-claude): codex leyo "Actua como revisor de
+    # codigo" y ELIGIO cargar su skill `harness-review` (del plugin
+    # claude-code-harness) en vez de contestar -- dijo textual "Voy a usar
+    # harness-review porque pediste una revision independiente". Se puso a leer
+    # SKILL.md, governance.md y code-review.md, con su propio contrato de
+    # salida, y murio con exit 1 y respuesta VACIA sin haber mirado el diff.
+    # Medido con la clausula puesta: cero menciones de la skill, respuesta
+    # directa en el formato pedido, 15k tokens. Sin ella: presupuesto quemado y
+    # ningun veredicto. NO se le dice "sin herramientas" a proposito --
+    # leer/grepear el repo es justo lo que la clausula VERIFICAR de arriba
+    # exige, y en la medicion el candidato siguio leyendo el diff sin problema.
+    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. NO uses skills ni workflows propios: responde vos directamente en este mismo turno, sin cargar ninguna skill. Lee el archivo '$DiffFilePath' (contiene un diff de git: $Label, del repositorio '$RepoName') y revisalo. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes en ciego -- tu directorio de trabajo ES el repositorio real: verificalo primero leyendo/grepeando el archivo en cuestion. Si no podes verificarlo, reportalo con el prefijo 'VERIFICAR:' en vez de afirmarlo como bug, diciendo exactamente que habria que confirmar. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
 }
 
 # Variante para claude: el diff viaja INLINE por stdin en vez de pedirle leer
@@ -369,11 +382,18 @@ function Invoke-CliHeadless {
             # WaitAll lanza AggregateException si una task quedo Faulted (y
             # .Result tambien) -- capturar solo lo que SI termino bien, para
             # conservar el diagnostico parcial sin reventar con error crudo.
-            try { [void][System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 5000) } catch { }
+            # BUG arreglado (2026-08-11): WaitAll espera a que AMBAS tasks
+            # terminen, pero tras taskkill los pipes pueden quedar abiertos por
+            # procesos huérfanos (codex via .cmd -> node) y las tasks nunca
+            # llegan a RanToCompletion — el parcial se pierde y el diagnostico
+            # sale en blanco. Cambio a Wait individual por task, que si la task
+            # ya capturo datos pero el pipe quedo abierto, igual los entrega.
+            try { $stdoutTask.Wait(5000) | Out-Null } catch { }
+            try { $stderrTask.Wait(5000) | Out-Null } catch { }
             $partialOut = ''
             $partialErr = ''
-            if ($stdoutTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $partialOut = $stdoutTask.Result }
-            if ($stderrTask.Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) { $partialErr = $stderrTask.Result }
+            if ($stdoutTask.IsCompleted) { try { $partialOut = $stdoutTask.Result } catch { } }
+            if ($stderrTask.IsCompleted) { try { $partialErr = $stderrTask.Result } catch { } }
             return [PSCustomObject]@{ Stdout = $partialOut; Stderr = $partialErr; ExitCode = 124; TimedOut = $true }
         }
         # WaitForExit(ms) puede regresar antes de que el output async
