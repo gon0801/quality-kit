@@ -1,0 +1,31 @@
+# Generado por quality-kit (install-ci-linux.ps1). Corre la suite bash
+# COMPLETA del repo en un runner Linux. Razon de existir (medida en
+# summonaikit-claude, fila 10.5 de su Plans.md): en Git Bash/MSYS2 cada
+# fork de subproceso cuesta ~28 ms; en Linux ~0.1 ms (~300x). Una suite de
+# shell que en Windows tarda ~18 min aca corre en ~1-2 min, asi que el PR
+# sabe si algo rompio sin esperar la corrida local.
+#
+# Solo aplica a repos cuya suite es scripts de shell. Los repos con suite
+# PowerShell, pytest o jest NO pagan el impuesto de MSYS2 -- a esos no les
+# instales esto (les basta el quality.yml de init-repo.ps1).
+#
+# Tests atados a Windows: el runner del repo debe saltearlos DECLARANDOLOS
+# (nombrarlos uno por uno en su salida detras de una variable de entorno
+# pasada con -EnvVar), nunca en silencio -- "not_observed != absent": un
+# test que no se pudo mirar se reporta como no observado, no como verde.
+name: Suite (Linux)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: __TIMEOUT_MINUTES__
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Correr la suite completa (__TEST_ENTRY__)
+__ENV_BLOCK__        run: bash __TEST_ENTRY__

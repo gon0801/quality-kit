@@ -18,6 +18,8 @@ $InstallAiRulesScript = Join-Path $QualityKitDir 'install-ai-rules.ps1'
 $UninstallAiRulesScript = Join-Path $QualityKitDir 'uninstall-ai-rules.ps1'
 $InstallDocsGroomScript = Join-Path $QualityKitDir 'install-docs-groom.ps1'
 $UninstallDocsGroomScript = Join-Path $QualityKitDir 'uninstall-docs-groom.ps1'
+$InstallCiLinuxScript = Join-Path $QualityKitDir 'install-ci-linux.ps1'
+$InstallBranchPushScript = Join-Path $QualityKitDir 'install-branch-push-policy.ps1'
 $DocsGroomDir = Join-Path $QualityKitDir 'docs-groom'
 $TestFixturesDir = Join-Path $QualityKitDir 'tests\temp-fixtures'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -1208,7 +1210,11 @@ if ($null -eq $RnBashExe) {
     }
     function Add-HarnessSubagent {
         param([string]$HookPath, [string]$Dir, [string]$Role)
-        $json = '{"hook_event_name":"PostToolUse","tool_name":"Task","subagent_type":"' + $Role + '"}'
+        # El rol viaja por DOS canales a proposito: el hook claude-shape
+        # pre-3.2 lo lee de cualquier clave subagent_type (sed greedy, gana
+        # la ultima), y el multi-host (fix A1/Task 3.1, vivo en .codex desde
+        # el 2026-08-15) SOLO lo lee dentro de tool_input de primer nivel.
+        $json = '{"hook_event_name":"PostToolUse","tool_name":"Task","subagent_type":"' + $Role + '","tool_input":{"subagent_type":"' + $Role + '"}}'
         Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json $json | Out-Null
     }
     function Add-HarnessEdit {
@@ -1226,17 +1232,27 @@ if ($null -eq $RnBashExe) {
         }
         if ($Content -eq '') { $Content = "line-$([guid]::NewGuid().ToString('N'))`n" }
         Write-Utf8NoBomFile -Path $fullPath -Content $Content
-        $json = '{"hook_event_name":"PostToolUse","tool_name":"Edit","file_path":"' + $FilePath + '"}'
+        # file_path por DOS canales, mismo motivo que en Add-HarnessSubagent:
+        # el multi-host lo lee SOLO dentro de tool_input (json_tool_input_string).
+        $json = '{"hook_event_name":"PostToolUse","tool_name":"Edit","file_path":"' + $FilePath + '","tool_input":{"file_path":"' + $FilePath + '"}}'
         Invoke-HarnessHook -HookPath $HookPath -WorkingDirectory $Dir -Json $json | Out-Null
     }
-    # Lists the per-project state-key subdirectories that exist right now
-    # under a hook copy's own state root, so a scenario can diff before/after
-    # Start-HarnessTurn to find ITS key without reimplementing the hook's own
-    # cksum-based hashing in PowerShell.
+    # Lists the per-project state-key directories (as paths RELATIVE to the
+    # state root) that exist right now under a hook copy's own state root, so
+    # a scenario can diff before/after Start-HarnessTurn to find ITS key
+    # without reimplementing the hook's own cksum-based hashing in PowerShell.
+    # Keyed by "directory that contains harness-state.env", recursively, and
+    # NOT by top-level dir name: the multi-host hook shape (live since the
+    # summonaikit-claude 6.6 install, 2026-08-15) nests state one level
+    # deeper (state\<host>\<key>) while the claude-shape copy keeps the flat
+    # state\<key> -- this helper must serve both.
     function Get-HarnessStateKeys {
         param([string]$StateRoot)
         if (-not (Test-Path -LiteralPath $StateRoot)) { return @() }
-        return @(Get-ChildItem -LiteralPath $StateRoot -Directory | ForEach-Object { $_.Name })
+        $rootFull = (Get-Item -LiteralPath $StateRoot).FullName
+        return @(Get-ChildItem -LiteralPath $StateRoot -Recurse -File -Filter 'harness-state.env' | ForEach-Object {
+            $_.Directory.FullName.Substring($rootFull.Length).TrimStart('\')
+        })
     }
     function New-HarnessProject {
         param([string]$HookPath, [string]$Name)
@@ -1247,24 +1263,37 @@ if ($null -eq $RnBashExe) {
         $script:RnStopExitCodes += $startResult.ExitCode
         $after = Get-HarnessStateKeys -StateRoot $stateRoot
         $key = @($after | Where-Object { $before -notcontains $_ })[0]
+        if ($null -eq $key) {
+            throw "New-HarnessProject: Start-HarnessTurn no creo ningun harness-state.env nuevo bajo $stateRoot (exit=$($startResult.ExitCode) stdout=$($startResult.Stdout))"
+        }
+        $keyDir = Join-Path $stateRoot $key
+        # El pendiente va por PROYECTO, no por sesion: asi lo entrega tambien
+        # a una sesion distinta de la que lo escribio (el bug real observado
+        # en la variante .codex, que llavea el estado por session_id). En el
+        # shape plano (claude) proyecto y estado comparten directorio; en el
+        # multi-host anidado (state\<host>\<proyecto>\<sesion>) el proyecto es
+        # el PADRE del directorio de sesion que lleva harness-state.env.
+        $pendingDir = $keyDir
+        if ($key -match '\\') { $pendingDir = Split-Path -Path $keyDir -Parent }
         return [PSCustomObject]@{
             Dir         = $dir
-            StatePath   = Join-Path $stateRoot (Join-Path $key 'harness-state.env')
-            LogPath     = Join-Path $stateRoot (Join-Path $key 'harness-evidence.log')
-            OrderPath   = Join-Path $stateRoot (Join-Path $key 'harness-state-review-notice.env')
-            # El pendiente va por PROYECTO (STATE_DIR), no por sesion: asi lo
-            # entrega tambien a una sesion distinta de la que lo escribio (el
-            # bug real observado en la variante .codex, que llavea el estado
-            # por session_id).
-            PendingPath = Join-Path $stateRoot (Join-Path $key 'review-notice-pending.log')
+            StatePath   = Join-Path $keyDir 'harness-state.env'
+            LogPath     = Join-Path $keyDir 'harness-evidence.log'
+            OrderPath   = Join-Path $keyDir 'harness-state-review-notice.env'
+            PendingPath = Join-Path $pendingDir 'review-notice-pending.log'
             FirstStart  = $startResult
         }
     }
-    # Fed as raw stdin, same as the SUMMONAIKIT HARNESS RECEIPT block a real
-    # agent turn ends with; "ran npm test" alone satisfies the Verify-evidence
-    # check via TEST_RUNNER_RE, so no separate tool call is needed for that gate.
+    # Fed as raw stdin; "ran npm test" alone satisfies the Verify-evidence
+    # check via TEST_RUNNER_RE, so no separate tool call is needed for that
+    # gate. The receipt travels through BOTH channels on purpose: the
+    # pre-3.2 claude-shape hook greps the RAW stdin tail (the trailing plain
+    # block), while the multi-host shape (live at .codex since the
+    # summonaikit-claude 6.6 install, 2026-08-15) only evaluates DECODED
+    # assistant text -- for it the receipt must arrive inside the payload's
+    # last_assistant_message key, and trailing text after the JSON is inert.
     $RnReceipt = (@'
-{"hook_event_name":"Stop","transcript_path":""}
+{"hook_event_name":"Stop","transcript_path":"","last_assistant_message":"SUMMONAIKIT HARNESS RECEIPT\nUnderstand: build the thing the user asked for\nImplement: changed the file\nVerify: ran npm test, all green\nReview: no findings\nClose: done, nothing pending\nRetro: none\n"}
 SUMMONAIKIT HARNESS RECEIPT
 Understand: build the thing the user asked for
 Implement: changed the file
@@ -2145,6 +2174,128 @@ Assert-True ($rOwned.ExitCode -eq 0) 'heal-repo.ps1 -AutoInit exits 0 on a repo 
 Assert-True (Test-Path -LiteralPath (Join-Path $ownedRepo '.pre-commit-config.yaml')) 'a repo whose remote matches my owners list gets its lock set up automatically'
 $ownedHook = Read-TextFile -Path (Join-Path $ownedRepo '.git\hooks\pre-commit')
 Assert-True ($null -ne $ownedHook -and $ownedHook -match 'generated by pre-commit') 'the pre-commit hook is armed on the owned-remote repo after auto-init'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 7: install-ci-linux.ps1 -- suite bash completa en runner Linux ==='
+$ciRepo = New-FakeGitRepo -Name 'fake-ci-linux'
+New-Item -ItemType Directory -Path (Join-Path $ciRepo 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciRepo 'tests\run.sh') -Content "#!/bin/bash`nexit 0`n"
+$ciWorkflowPath = Join-Path $ciRepo '.github\workflows\suite-linux.yml'
+
+$rCi = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepo)
+Assert-True ($rCi.ExitCode -eq 0) 'install-ci-linux.ps1 exits 0 on a repo with a bash suite' "exit=$($rCi.ExitCode) stderr=$($rCi.Stderr)"
+$ciYaml = Read-TextFile -Path $ciWorkflowPath
+Assert-True ($null -ne $ciYaml) '.github\workflows\suite-linux.yml was written'
+Assert-True ($ciYaml -match [regex]::Escape('Generado por quality-kit (install-ci-linux.ps1)')) 'the workflow carries the kit ownership marker'
+Assert-True ($ciYaml -match [regex]::Escape('run: bash tests/run.sh')) 'the job runs the default entrypoint tests/run.sh'
+Assert-True ($ciYaml -match 'timeout-minutes: 30') 'the default timeout is 30 minutes'
+Assert-True ($ciYaml -notmatch '(?m)^\s*env:') 'without -EnvVar the job has no env block'
+Assert-True ($ciYaml -notmatch '__TIMEOUT_MINUTES__|__TEST_ENTRY__|__ENV_BLOCK__') 'no template placeholder survives in the written yaml'
+Assert-True ($rCi.Stdout -match 'DECLARANDOLOS') 'without -EnvVar the installer reminds about DECLARED skips for Windows-bound tests'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 7b: install-ci-linux.ps1 -EnvVar / -TimeoutMinutes, y valores con $ sobreviven literales ==='
+# `${{ github.workspace }}` en el VALOR es el caso real (SAIKIT_HOOK_VIVO en
+# summonaikit-claude) y el que un -replace de PowerShell corromperia: tiene
+# que llegar literal al yaml.
+# Un solo -EnvVar con lista por comas: invocado con `powershell -File` un
+# parametro nombrado no se puede repetir (la forma repetida es binding error).
+$rCi2 = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepo, '-TimeoutMinutes', '45', '-EnvVar', 'SAIKIT_CI_LINUX=1,HOOK_VIVO=${{ github.workspace }}/hooks/x.sh')
+Assert-True ($rCi2.ExitCode -eq 0) 'a second run with -EnvVar and -TimeoutMinutes exits 0 (kit-marked file is refreshable)' "exit=$($rCi2.ExitCode) stderr=$($rCi2.Stderr)"
+$ciYaml2 = Read-TextFile -Path $ciWorkflowPath
+Assert-True ($ciYaml2 -match 'timeout-minutes: 45') '-TimeoutMinutes 45 lands in the yaml'
+Assert-True ($ciYaml2 -match "(?m)^          SAIKIT_CI_LINUX: '1'$") 'the env var lands under env:, single-quoted'
+Assert-True ($ciYaml2 -match [regex]::Escape("HOOK_VIVO: '`${{ github.workspace }}/hooks/x.sh'")) 'a value containing $ arrives LITERAL in the yaml (no regex-replacement mangling)'
+Assert-True ($ciYaml2 -match '(?m)^        env:') 'the env block sits at step level (8-space indent)'
+
+$rCi3 = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepo, '-TimeoutMinutes', '45', '-EnvVar', 'SAIKIT_CI_LINUX=1,HOOK_VIVO=${{ github.workspace }}/hooks/x.sh')
+Assert-True ($rCi3.ExitCode -eq 0 -and $rCi3.Stdout -match 'ya esta al dia') 'an identical re-run reports up-to-date without rewriting' "stdout=$($rCi3.Stdout)"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 7c: install-ci-linux.ps1 se rehusa sin suite bash y ante un workflow ajeno ==='
+$ciRepoNoBash = New-FakeGitRepo -Name 'fake-ci-linux-nobash'
+Write-Utf8NoBomFile -Path (Join-Path $ciRepoNoBash 'app.py') -Content "print('hi')`n"
+$rCiNoBash = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepoNoBash)
+Assert-True ($rCiNoBash.ExitCode -ne 0) 'a repo without tests/run.sh is refused (this job is only for bash suites)' "exit=$($rCiNoBash.ExitCode)"
+Assert-True ($rCiNoBash.Stdout -match 'SOLO para repos con suite bash') 'the refusal explains WHY (PowerShell/pytest/jest repos do not pay the MSYS2 tax)'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $ciRepoNoBash '.github\workflows\suite-linux.yml'))) 'nothing was written into the refused repo'
+
+$ciRepoForeign = New-FakeGitRepo -Name 'fake-ci-linux-foreign'
+New-Item -ItemType Directory -Path (Join-Path $ciRepoForeign 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciRepoForeign 'tests\run.sh') -Content "#!/bin/bash`nexit 0`n"
+$foreignWorkflowDir = Join-Path $ciRepoForeign '.github\workflows'
+New-Item -ItemType Directory -Path $foreignWorkflowDir -Force | Out-Null
+$foreignYaml = "name: Mi workflow propio`non: [push]`n"
+Write-Utf8NoBomFile -Path (Join-Path $foreignWorkflowDir 'suite-linux.yml') -Content $foreignYaml
+$rCiForeign = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepoForeign)
+Assert-True ($rCiForeign.ExitCode -ne 0 -and $rCiForeign.Stdout -match 'NO fue generado por quality-kit') 'a hand-written suite-linux.yml is respected and reported' "exit=$($rCiForeign.ExitCode)"
+Assert-True ((Read-TextFile -Path (Join-Path $foreignWorkflowDir 'suite-linux.yml')) -eq $foreignYaml) 'the foreign workflow is byte-for-byte untouched'
+
+$rCiBadEnv = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepoForeign, '-EnvVar', 'sin-igual')
+Assert-True ($rCiBadEnv.ExitCode -ne 0 -and $rCiBadEnv.Stdout -match 'NOMBRE=valor') 'a malformed -EnvVar (no =) is refused before writing anything' "exit=$($rCiBadEnv.ExitCode)"
+
+Write-Host ''
+Write-Host '=== TEST GROUP 8: install-branch-push-policy.ps1 -- yaml del guardrail por repo (accion de operador) ==='
+$bpRepo = New-FakeGitRepo -Name 'fake-branch-push'
+$bpConfigPath = Join-Path $bpRepo '.claude-code-harness.config.yaml'
+$rBp = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepo)
+Assert-True ($rBp.ExitCode -eq 0) 'install-branch-push-policy.ps1 exits 0 creating the config from nothing' "exit=$($rBp.ExitCode) stderr=$($rBp.Stderr)"
+$bpYaml = Read-TextFile -Path $bpConfigPath
+Assert-True ($null -ne $bpYaml -and $bpYaml -match '(?m)^safety:') 'the config has the safety: section'
+Assert-True ($bpYaml -match '(?m)^  protected_branch_push: allow$') 'the default mode written is allow, indented under safety'
+Assert-True ($bpYaml -match 'Decision del operador') 'the config carries the WHY comment (operator decision, agent blocked by control-plane)'
+Assert-True ($bpYaml -match '`ask`' -and $bpYaml -notmatch [char]7) 'the comment backticks survive literally (no PowerShell escape mangling)'
+
+$rBp2 = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepo)
+Assert-True ($rBp2.ExitCode -eq 0 -and $rBp2.Stdout -match 'sin cambios') 'a re-run with the same mode reports no-change' "stdout=$($rBp2.Stdout)"
+Assert-True ((Read-TextFile -Path $bpConfigPath) -eq $bpYaml) 'the config is byte-for-byte identical after the no-change re-run'
+Assert-True (@(Get-ChildItem -LiteralPath $bpRepo -Filter '*.bak-*').Count -eq 0) 'no backup is created when nothing changed'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 8b: install-branch-push-policy.ps1 edita quirurgicamente un config existente ==='
+# Config ajeno con CRLF, otra clave bajo safety y otra seccion: el flip de
+# valor tiene que preservar TODO lo demas, incluido el fin de linea CRLF.
+$bpRepo2 = New-FakeGitRepo -Name 'fake-branch-push-edit'
+$bpConfigPath2 = Join-Path $bpRepo2 '.claude-code-harness.config.yaml'
+$preexistingCfg = "# config previa del repo`r`nsafety:`r`n  otra_clave: valor`r`n  protected_branch_push: ask`r`nworkflow:`r`n  algo: true`r`n"
+Write-Utf8NoBomFile -Path $bpConfigPath2 -Content $preexistingCfg
+$rBpEdit = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepo2, '-Mode', 'allow')
+Assert-True ($rBpEdit.ExitCode -eq 0 -and $rBpEdit.Stdout -match 'ask -> allow') 'an existing ask value is flipped to allow and announced' "stdout=$($rBpEdit.Stdout)"
+$bpYamlEdit = Read-TextFile -Path $bpConfigPath2
+Assert-True ($bpYamlEdit -match "  protected_branch_push: allow`r`n") 'the flipped line keeps its CRLF ending (surgical edit, not a rewrite)'
+Assert-True ($bpYamlEdit -match 'otra_clave: valor' -and $bpYamlEdit -match 'workflow:' -and $bpYamlEdit -match '# config previa del repo') 'every other line of the pre-existing config survives untouched'
+Assert-True (@(Get-ChildItem -LiteralPath $bpRepo2 -Filter '.claude-code-harness.config.yaml.bak-*' -Force).Count -eq 1) 'a timestamped backup was taken before editing'
+
+$bpRepo3 = New-FakeGitRepo -Name 'fake-branch-push-insert'
+$bpConfigPath3 = Join-Path $bpRepo3 '.claude-code-harness.config.yaml'
+Write-Utf8NoBomFile -Path $bpConfigPath3 -Content "safety:`n  otra_clave: valor`n"
+$rBpInsert = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepo3)
+Assert-True ($rBpInsert.ExitCode -eq 0 -and $rBpInsert.Stdout -match 'seccion safety existente') 'a safety: section without our key gets the key inserted' "stdout=$($rBpInsert.Stdout)"
+$bpYamlInsert = Read-TextFile -Path $bpConfigPath3
+Assert-True ($bpYamlInsert -match "(?m)^safety:`n  protected_branch_push: allow$") 'the key lands right under safety:'
+Assert-True ($bpYamlInsert -match 'otra_clave: valor') 'the pre-existing key under safety survives'
+Assert-True (([regex]::Matches($bpYamlInsert, '(?m)^safety')).Count -eq 1) 'no duplicate safety: section was created'
+
+$bpRepo4 = New-FakeGitRepo -Name 'fake-branch-push-append'
+$bpConfigPath4 = Join-Path $bpRepo4 '.claude-code-harness.config.yaml'
+Write-Utf8NoBomFile -Path $bpConfigPath4 -Content "workflow:`n  algo: true`n"
+$rBpAppend = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepo4)
+Assert-True ($rBpAppend.ExitCode -eq 0 -and $rBpAppend.Stdout -match 'agregado al final') 'a config with no safety section gets the whole block appended' "stdout=$($rBpAppend.Stdout)"
+$bpYamlAppend = Read-TextFile -Path $bpConfigPath4
+Assert-True ($bpYamlAppend -match '(?m)^workflow:' -and $bpYamlAppend -match '(?m)^  protected_branch_push: allow$') 'the original section and the appended block coexist'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 8c: install-branch-push-policy.ps1 guardas de entrada ==='
+$notARepo = Join-Path $TestFixturesDir 'not-a-repo-bp'
+New-Item -ItemType Directory -Path $notARepo -Force | Out-Null
+$rBpNoGit = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $notARepo)
+Assert-True ($rBpNoGit.ExitCode -ne 0) 'a directory that is not a git repo is refused' "exit=$($rBpNoGit.ExitCode)"
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $notARepo '.claude-code-harness.config.yaml'))) 'nothing was written into the non-repo'
+
+$bpRepo5 = New-FakeGitRepo -Name 'fake-branch-push-badmode'
+$rBpBadMode = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepo5, '-Mode', 'yolo')
+Assert-True ($rBpBadMode.ExitCode -ne 0) 'an unknown -Mode is rejected by ValidateSet' "exit=$($rBpBadMode.ExitCode)"
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $bpRepo5 '.claude-code-harness.config.yaml'))) 'nothing was written with the rejected mode'
 
 Write-Host ''
 Write-Host "=== SUMMARY: $script:PassCount passed, $script:FailCount failed ==="

@@ -347,6 +347,55 @@ Para sacarla despues:
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\uninstall-docs-groom.ps1
 ```
 
+## CI Linux para suites bash -- `install-ci-linux.ps1`
+
+Para repos cuya suite de tests son scripts de shell. En Git Bash/MSYS2 cada
+fork de subproceso cuesta ~28 ms; en Linux ~0.1 ms (~300x). Medido en
+summonaikit-claude (fila 10.5 de su Plans.md): la misma suite pasa de ~18 min
+en Windows a ~1-2 min en ubuntu-latest. Este installer escribe
+`.github\workflows\suite-linux.yml` con un job que corre la suite completa en
+cada push/PR.
+
+```
+powershell -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-ci-linux.ps1 -RepoPath <repo> `
+    [-TestEntry tests/run.sh] [-TimeoutMinutes 30] [-EnvVar "SAIKIT_CI_LINUX=1,OTRA=valor"]
+```
+
+- Solo aplica a suites bash: si no existe el entrypoint (`tests/run.sh` por
+  default, otro con `-TestEntry`), se rehusa. Los repos con suite PowerShell
+  (este kit), pytest o jest no pagan el impuesto de MSYS2 -- les basta el
+  `quality.yml` de `init-repo.ps1`.
+- Tests atados a Windows: el runner del repo debe saltearlos DECLARANDOLOS
+  (nombrados uno por uno en su salida, detras de una variable pasada con
+  `-EnvVar`), nunca en silencio -- `not_observed != absent`.
+- Idempotente: refresca su propio workflow (marca de propiedad); un
+  `suite-linux.yml` escrito a mano se respeta y no se toca.
+- Candidato tipico: summonaikit-kimi (mismo molde de tests que
+  summonaikit-claude).
+
+## Politica de push a ramas protegidas -- `install-branch-push-policy.ps1`
+
+El guardrail del plugin claude-code-harness lee
+`<repo>\.claude-code-harness.config.yaml`; con el default (`ask`), cada push
+directo a master deja un prompt colgado cuando el operador no esta (medido
+2026-08-15: fue uno de los bloques grandes de una task de 18 h de pared). El
+fallback (`harness.toml` en la raiz versionada del plugin) muere en cada
+update del plugin; el lugar correcto es el yaml del repo, commiteado.
+
+```
+powershell -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-branch-push-policy.ps1 -RepoPath <repo> [-Mode allow|ask]
+```
+
+- **Para el operador, no para una sesion de IA**: el harness le bloquea al
+  agente escribir ese archivo (control-plane), y esta bien que asi sea -- un
+  agente no desarma sus propios candados. Corre el script vos.
+- `allow` (default) solo tiene sentido si el repo tiene OTRA red sobre la
+  rama protegida: pre-commit + un job de CI en cada push (`init-repo.ps1` +
+  `install-ci-linux.ps1`). Sin esa red, usa `-Mode ask`.
+- Sobre un config existente edita quirurgicamente (backup fechado previo):
+  cambia solo el valor de `protected_branch_push`, o inserta la clave en la
+  seccion `safety:` existente, sin tocar el resto.
+
 ## Troubleshooting
 
 ### Codex pide confirmar la confianza del directorio
