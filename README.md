@@ -391,6 +391,10 @@ powershell -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-bran
 - **Para el operador, no para una sesion de IA**: el harness le bloquea al
   agente escribir ese archivo (control-plane), y esta bien que asi sea -- un
   agente no desarma sus propios candados. Corre el script vos.
+- **Repos nuevos**: no hace falta correrlo a mano -- `init-repo.ps1` (y por
+  lo tanto `new-repo.ps1`) lo instala solo con `allow` cuando deja la red
+  armada (candados de pre-commit + remoto de GitHub + workflow de CI). Sin
+  esa red lo saltea con aviso, porque un allow desnudo no presupone nada.
 - `allow` (default) solo tiene sentido si el repo tiene OTRA red sobre la
   rama protegida: pre-commit + un job de CI en cada push (`init-repo.ps1` +
   `install-ci-linux.ps1`). Sin esa red, usa `-Mode ask`.

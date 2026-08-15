@@ -1004,6 +1004,35 @@ if ($hasGithubRemote) {
     Write-Host '==> Sin remoto de GitHub todavia -- salteo la nube (.github\workflows\quality.yml). Se activa solo el dia que subas este repo a GitHub; volve a correr este script despues.'
 }
 
+# Politica de push a ramas protegidas (claude-code-harness). init-repo corre
+# SIEMPRE en manos del operador, asi que instalarla aca respeta el
+# control-plane: el agente sigue sin poder escribirla desde una sesion.
+# `allow` SOLO cuando la red quedo armada en este mismo repo: candados de
+# pre-commit (instalados unas lineas arriba, o el script ya habria tirado) +
+# remoto de GitHub + algun workflow de CI. Sin esa red se saltea con aviso --
+# un allow desnudo dejaria la rama protegida sin nada que la respalde, que es
+# exactamente lo que la politica presupone que existe.
+$policyOutcome = 'salteada (sin remoto de GitHub o sin CI)'
+$policyScript = Join-Path $QualityKitDir 'install-branch-push-policy.ps1'
+$ciWorkflowsDir = Join-Path $RepoPath '.github\workflows'
+$hasCiNet = $false
+if (Test-Path -LiteralPath $ciWorkflowsDir) {
+    $hasCiNet = (@(Get-ChildItem -LiteralPath $ciWorkflowsDir -Filter '*.y*ml' -File -ErrorAction SilentlyContinue).Count -gt 0)
+}
+if (-not (Test-Path -LiteralPath $policyScript)) {
+    Write-Host '==> [!] Falta install-branch-push-policy.ps1 en el kit -- politica de push no instalada.'
+    $policyOutcome = 'no instalada (kit incompleto)'
+} elseif ($hasGithubRemote -and $hasCiNet) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $policyScript -RepoPath $RepoPath -Mode allow
+    if ($LASTEXITCODE -eq 0) {
+        $policyOutcome = 'allow (red armada: pre-commit + CI)'
+    } else {
+        $policyOutcome = "fallo (codigo $LASTEXITCODE) -- ver arriba"
+    }
+} else {
+    Write-Host '==> Salteo la politica de push a ramas protegidas: `allow` presupone la red (remoto de GitHub + CI en cada push). Se instala al re-correr este script cuando el repo la tenga, o a mano con install-branch-push-policy.ps1 (-Mode ask si la red no va a existir).'
+}
+
 $sectionBody = Get-CalidadSectionBody -Detected $detected -Components $built.Components -ConfigOutcome $configOutcome -SkippedTestWarning $skippedTestWarning
 Update-CalidadDoc -DocPath (Join-Path $RepoPath 'CLAUDE.md') -SectionBody $sectionBody
 Update-CalidadDoc -DocPath (Join-Path $RepoPath 'AGENTS.md') -SectionBody $sectionBody
@@ -1020,6 +1049,7 @@ if ($configOutcome -eq 'Written') {
 }
 Write-Host "Pre-push (pruebas): $needsPrePush"
 Write-Host "Workflow de CI copiado: $workflowWritten (remoto de GitHub detectado: $hasGithubRemote)"
+Write-Host "Politica de push (claude-code-harness): $policyOutcome"
 Write-Host "CLAUDE.md / AGENTS.md actualizados con la seccion Calidad."
 if ($skippedTestWarning) {
     Write-Host "ADVERTENCIA: $skippedTestWarning"

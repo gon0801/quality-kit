@@ -2353,5 +2353,31 @@ Assert-True ($rBpBadMode.ExitCode -ne 0) 'an unknown -Mode is rejected by Valida
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $bpRepo5 '.claude-code-harness.config.yaml'))) 'nothing was written with the rejected mode'
 
 Write-Host ''
+Write-Host '=== TEST GROUP 9: init-repo.ps1 instala la politica de push SOLO cuando arma la red ==='
+# Con remoto de GitHub: init-repo escribe el workflow y entonces instala la
+# politica allow -- el operador corriendo init-repo ES el modelo control-plane.
+$policyInitRepo = New-FakeGitRepo -Name 'fake-init-policy-net'
+Write-Utf8NoBomFile -Path (Join-Path $policyInitRepo 'app.py') -Content "print('hi')`n"
+Invoke-GitSilent -GitArgs @('-C', $policyInitRepo, 'remote', 'add', 'origin', 'https://github.com/myhandle/policy-net')
+$rInitNet = Invoke-ScriptCapture -ScriptPath $InitRepoScript -ScriptArgs @('-RepoPath', $policyInitRepo)
+Assert-True ($rInitNet.ExitCode -eq 0) 'init-repo exits 0 on the with-remote repo' "exit=$($rInitNet.ExitCode) stderr=$($rInitNet.Stderr)"
+$policyYamlInit = Read-TextFile -Path (Join-Path $policyInitRepo '.claude-code-harness.config.yaml')
+Assert-True ($null -ne $policyYamlInit -and $policyYamlInit -match '(?m)^  protected_branch_push: allow$') 'init-repo installed the allow policy after arming pre-commit + CI'
+Assert-True ($rInitNet.Stdout -match 'Politica de push \(claude-code-harness\): allow') 'the init-repo summary reports the installed policy'
+Assert-True ($rInitNet.Stdout -notmatch 'allow SIN red') 'no no-net warning fires when init-repo just armed the net itself'
+
+$rInitNet2 = Invoke-ScriptCapture -ScriptPath $InitRepoScript -ScriptArgs @('-RepoPath', $policyInitRepo)
+Assert-True ($rInitNet2.ExitCode -eq 0 -and $rInitNet2.Stdout -match 'ya tiene protected_branch_push: allow') 'a re-run of init-repo leaves the existing policy untouched (idempotent)' "stdout=$($rInitNet2.Stdout)"
+
+# Sin remoto de GitHub: no hay CI que respalde un allow -- se saltea con aviso
+# y NO se escribe la politica.
+$policyInitBare = New-FakeGitRepo -Name 'fake-init-policy-bare'
+Write-Utf8NoBomFile -Path (Join-Path $policyInitBare 'app.py') -Content "print('hi')`n"
+$rInitBare = Invoke-ScriptCapture -ScriptPath $InitRepoScript -ScriptArgs @('-RepoPath', $policyInitBare)
+Assert-True ($rInitBare.ExitCode -eq 0) 'init-repo exits 0 on the no-remote repo' "exit=$($rInitBare.ExitCode)"
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $policyInitBare '.claude-code-harness.config.yaml'))) 'NO policy yaml is written when there is no CI net to back an allow'
+Assert-True ($rInitBare.Stdout -match 'Salteo la politica de push') 'init-repo says out loud that the policy was skipped and why'
+
+Write-Host ''
 Write-Host "=== SUMMARY: $script:PassCount passed, $script:FailCount failed ==="
 if ($script:FailCount -gt 0) { exit 1 } else { exit 0 }
