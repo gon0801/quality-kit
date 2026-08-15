@@ -30,6 +30,9 @@
 param(
     [string]$RepoPath = (Get-Location).Path,
     [string]$TestEntry = 'tests/run.sh',
+    # 1..360: cross-review 2026-08-15 (hallazgo 6) -- 0/negativo generaria un
+    # workflow que GitHub Actions rechaza; 360 es el tope de un job hosted.
+    [ValidateRange(1, 360)]
     [int]$TimeoutMinutes = 30,
     [string[]]$EnvVar = @()
 )
@@ -58,9 +61,17 @@ if (-not (Test-Path -LiteralPath $TemplatePath)) {
 # --- 1. El repo tiene que TENER la suite bash que este job corre ------------
 # TestEntry viaja en forma POSIX (tests/run.sh) porque asi va al yaml; para
 # mirar el disco local se traduce a forma Windows.
+# Cross-review 2026-08-15 (hallazgo 4): TestEntry se interpola en el yaml
+# (nombre del step y linea `run:`) -- allowlist estricta: relativo al repo,
+# sin `..`, sin espacios ni metacaracteres. Con ese alfabeto, la
+# interpolacion sin comillas es segura por construccion.
+if ($TestEntry -notmatch '^[A-Za-z0-9._/-]+$' -or $TestEntry -match '(^|/)\.\.(/|$)' -or $TestEntry.StartsWith('/')) {
+    Write-Host "==> [X] -TestEntry '$TestEntry' invalido: tiene que ser una ruta RELATIVA dentro del repo (letras/numeros/._/-), sin '..', espacios ni metacaracteres."
+    exit 1
+}
 $entryLocal = Join-Path $RepoPath ($TestEntry -replace '/', '\')
-if (-not (Test-Path -LiteralPath $entryLocal)) {
-    Write-Host "==> [X] No existe $TestEntry en $RepoPath -- este job es SOLO para repos con suite bash."
+if (-not (Test-Path -LiteralPath $entryLocal -PathType Leaf)) {
+    Write-Host "==> [X] No existe $TestEntry (como archivo) en $RepoPath -- este job es SOLO para repos con suite bash."
     Write-Host '    Si la suite del repo es PowerShell, pytest o jest, no paga el impuesto de MSYS2: le basta el quality.yml de init-repo.ps1.'
     Write-Host '    Si la suite bash vive en otra ruta, pasala con -TestEntry <ruta/relativa.sh>.'
     exit 1

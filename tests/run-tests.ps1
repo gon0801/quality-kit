@@ -2234,6 +2234,17 @@ Assert-True ((Read-TextFile -Path (Join-Path $foreignWorkflowDir 'suite-linux.ym
 $rCiBadEnv = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepoForeign, '-EnvVar', 'sin-igual')
 Assert-True ($rCiBadEnv.ExitCode -ne 0 -and $rCiBadEnv.Stdout -match 'NOMBRE=valor') 'a malformed -EnvVar (no =) is refused before writing anything' "exit=$($rCiBadEnv.ExitCode)"
 
+# Cross-review 2026-08-15, hallazgos 4 y 6: TestEntry se interpola al yaml y
+# TimeoutMinutes va a timeout-minutes -- entradas invalidas se rechazan ANTES
+# de escribir nada.
+$rCiDotDot = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepoForeign, '-TestEntry', 'tests/../../evil.sh')
+Assert-True ($rCiDotDot.ExitCode -ne 0 -and $rCiDotDot.Stdout -match 'invalido') 'a -TestEntry escaping the repo via .. is refused by the allowlist' "exit=$($rCiDotDot.ExitCode) stdout=$($rCiDotDot.Stdout)"
+New-Item -ItemType Directory -Path (Join-Path $ciRepoForeign 'tests\subdir.sh') -Force | Out-Null
+$rCiDir = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepoForeign, '-TestEntry', 'tests/subdir.sh')
+Assert-True ($rCiDir.ExitCode -ne 0 -and $rCiDir.Stdout -match 'como archivo') 'a -TestEntry that is a DIRECTORY is refused (PathType Leaf)' "exit=$($rCiDir.ExitCode)"
+$rCiTimeout0 = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciRepoForeign, '-TimeoutMinutes', '0')
+Assert-True ($rCiTimeout0.ExitCode -ne 0) 'a -TimeoutMinutes of 0 is rejected by ValidateRange before writing anything' "exit=$($rCiTimeout0.ExitCode)"
+
 Write-Host ''
 Write-Host '=== TEST GROUP 8: install-branch-push-policy.ps1 -- yaml del guardrail por repo (accion de operador) ==='
 $bpRepo = New-FakeGitRepo -Name 'fake-branch-push'
@@ -2283,6 +2294,50 @@ $rBpAppend = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptAr
 Assert-True ($rBpAppend.ExitCode -eq 0 -and $rBpAppend.Stdout -match 'agregado al final') 'a config with no safety section gets the whole block appended' "stdout=$($rBpAppend.Stdout)"
 $bpYamlAppend = Read-TextFile -Path $bpConfigPath4
 Assert-True ($bpYamlAppend -match '(?m)^workflow:' -and $bpYamlAppend -match '(?m)^  protected_branch_push: allow$') 'the original section and the appended block coexist'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 8d: cross-review 2026-08-15 -- clave acotada a safety, comentarios inline, advertencia allow-sin-red ==='
+# Hallazgo 1: una clave homonima FUERA de safety no se toca; la politica real
+# se agrega como bloque safety propio.
+$bpRepoHomonym = New-FakeGitRepo -Name 'fake-branch-push-homonym'
+$bpConfigHomonym = Join-Path $bpRepoHomonym '.claude-code-harness.config.yaml'
+Write-Utf8NoBomFile -Path $bpConfigHomonym -Content "otra_seccion:`n  protected_branch_push: deny`n"
+$rBpHomonym = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepoHomonym)
+Assert-True ($rBpHomonym.ExitCode -eq 0 -and $rBpHomonym.Stdout -match 'agregado al final') 'a homonymous key OUTSIDE safety does not get edited -- the real safety block is appended instead' "stdout=$($rBpHomonym.Stdout)"
+$bpYamlHomonym = Read-TextFile -Path $bpConfigHomonym
+Assert-True ($bpYamlHomonym -match '(?m)^  protected_branch_push: deny$') 'the foreign protected_branch_push under otra_seccion survives untouched'
+Assert-True ($bpYamlHomonym -match '(?m)^safety:' -and $bpYamlHomonym -match '(?m)^  protected_branch_push: allow$') 'the real policy lands in its own safety block'
+
+# Hallazgo 2: comentario inline en la clave -- el flip preserva el comentario
+# y no duplica la clave.
+$bpRepoComment = New-FakeGitRepo -Name 'fake-branch-push-comment'
+$bpConfigComment = Join-Path $bpRepoComment '.claude-code-harness.config.yaml'
+Write-Utf8NoBomFile -Path $bpConfigComment -Content "safety:`n  protected_branch_push: ask # decidido por el operador`n"
+$rBpComment = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepoComment)
+Assert-True ($rBpComment.ExitCode -eq 0 -and $rBpComment.Stdout -match 'ask -> allow') 'a key with an inline comment is still matched and flipped' "stdout=$($rBpComment.Stdout)"
+$bpYamlComment = Read-TextFile -Path $bpConfigComment
+Assert-True ($bpYamlComment -match '(?m)^  protected_branch_push: allow # decidido por el operador$') 'the inline comment survives the value flip'
+Assert-True (([regex]::Matches($bpYamlComment, 'protected_branch_push')).Count -eq 1) 'no duplicate key was inserted alongside the commented one'
+
+# Hallazgo 2 (mitad seccion): `safety:` con comentario inline tampoco duplica
+# la seccion -- la clave se inserta adentro.
+$bpRepoSecComment = New-FakeGitRepo -Name 'fake-branch-push-seccomment'
+$bpConfigSecComment = Join-Path $bpRepoSecComment '.claude-code-harness.config.yaml'
+Write-Utf8NoBomFile -Path $bpConfigSecComment -Content "safety: # solo esta seccion`n  otra_clave: valor`n"
+$rBpSecComment = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepoSecComment)
+Assert-True ($rBpSecComment.ExitCode -eq 0 -and $rBpSecComment.Stdout -match 'seccion safety existente') 'a safety: line with an inline comment is recognized as the existing section' "stdout=$($rBpSecComment.Stdout)"
+$bpYamlSecComment = Read-TextFile -Path $bpConfigSecComment
+Assert-True (([regex]::Matches($bpYamlSecComment, '(?m)^safety')).Count -eq 1 -and $bpYamlSecComment -match '(?m)^  protected_branch_push: allow$') 'the key went INTO the commented section, no duplicate safety was appended'
+
+# Hallazgo 3 (aceptado como advertencia): allow sobre un repo sin pre-commit
+# ni CI avisa fuerte; con la red presente, calla.
+Assert-True ($rBpHomonym.Stdout -match 'allow SIN red') 'allow on a repo with no pre-commit and no CI prints the loud no-net warning'
+$bpRepoNet = New-FakeGitRepo -Name 'fake-branch-push-withnet'
+Write-Utf8NoBomFile -Path (Join-Path $bpRepoNet '.pre-commit-config.yaml') -Content "repos: []`n"
+New-Item -ItemType Directory -Path (Join-Path $bpRepoNet '.github\workflows') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $bpRepoNet '.github\workflows\quality.yml') -Content "name: Quality`n"
+$rBpNet = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepoNet)
+Assert-True ($rBpNet.ExitCode -eq 0 -and $rBpNet.Stdout -notmatch 'allow SIN red') 'allow on a repo WITH pre-commit and CI does not warn' "stdout=$($rBpNet.Stdout)"
 
 Write-Host ''
 Write-Host '=== TEST GROUP 8c: install-branch-push-policy.ps1 guardas de entrada ==='

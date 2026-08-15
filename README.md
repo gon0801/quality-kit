@@ -354,7 +354,9 @@ fork de subproceso cuesta ~28 ms; en Linux ~0.1 ms (~300x). Medido en
 summonaikit-claude (fila 10.5 de su Plans.md): la misma suite pasa de ~18 min
 en Windows a ~1-2 min en ubuntu-latest. Este installer escribe
 `.github\workflows\suite-linux.yml` con un job que corre la suite completa en
-cada push/PR.
+cada push a main/master y en cada PR (el mismo criterio que el `quality.yml`
+de `init-repo.ps1`, para no duplicar corridas push+PR; una rama protegida con
+otro nombre requiere editar `branches:` a mano).
 
 ```
 powershell -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-ci-linux.ps1 -RepoPath <repo> `

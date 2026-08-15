@@ -40,6 +40,26 @@ if (-not (Test-Path (Join-Path $RepoPath '.git'))) {
     exit 1
 }
 
+# Cross-review 2026-08-15 (hallazgo 3, aceptado como ADVERTENCIA): `allow`
+# presupone la red pre-commit + CI. Si no se ve ninguna, se avisa fuerte --
+# pero se procede: la decision es del operador por diseno, no del script.
+if ($Mode -eq 'allow') {
+    $red = @()
+    if (-not (Test-Path (Join-Path $RepoPath '.pre-commit-config.yaml'))) {
+        $red += 'sin .pre-commit-config.yaml (candados: init-repo.ps1)'
+    }
+    $wfDir = Join-Path $RepoPath '.github\workflows'
+    $wfCount = 0
+    if (Test-Path -LiteralPath $wfDir) {
+        $wfCount = @(Get-ChildItem -LiteralPath $wfDir -Filter '*.y*ml' -File -ErrorAction SilentlyContinue).Count
+    }
+    if ($wfCount -eq 0) { $red += 'sin workflows de CI (init-repo.ps1 / install-ci-linux.ps1)' }
+    if ($red.Count -gt 0) {
+        Write-Host "==> [!] allow SIN red detectada en el repo: $($red -join '; ')."
+        Write-Host '    El guardrail queda desactivado sin candados/CI que lo respalden -- considera -Mode ask, o instala la red primero.'
+    }
+}
+
 # Bloque nuevo, con el porque adentro para que el proximo que abra el archivo
 # no tenga que ir a buscarlo al historial de otro repo. Here-string de
 # comillas SIMPLES a proposito: en uno doble, los backticks del texto serian
@@ -68,28 +88,42 @@ if (-not (Test-Path -LiteralPath $ConfigPath)) {
 $existing = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8)
 # `[ \t]*\r?` explicito en vez de `\s*$`: con archivos CRLF, `\s*` se traga
 # el `\r` (y hasta lineas en blanco) y la edicion perderia el fin de linea.
-$keyRegex = [regex]'(?m)^([ \t]*protected_branch_push[ \t]*:[ \t]*)(\S+)([ \t]*\r?)$'
+# `(?:#[^\r\n]*)?` en ambas regex: cross-review 2026-08-15 (hallazgo 2) --
+# un comentario inline (`ask # motivo`, `safety: # motivo`) hacia fallar el
+# match y la rama de insercion duplicaba la clave/seccion.
+$safetyRegex = [regex]'(?m)^safety[ \t]*:[ \t]*(?:#[^\r\n]*)?\r?$'
+$keyRegex = [regex]'(?m)^([ \t]+protected_branch_push[ \t]*:[ \t]*)(\S+)([ \t]*(?:#[^\r\n]*)?\r?)$'
 
-$keyMatch = $keyRegex.Match($existing)
-if ($keyMatch.Success) {
-    $current = $keyMatch.Groups[2].Value
-    if ($current -eq $Mode) {
-        Write-Host "==> [OK] $ConfigName ya tiene protected_branch_push: $Mode -- sin cambios."
+# Cross-review 2026-08-15 (hallazgo 1): la clave se busca SOLO dentro de la
+# seccion safety (desde su linea hasta la siguiente clave top-level), no en
+# el archivo entero -- una clave homonima de otra seccion no se toca.
+$secMatch = $safetyRegex.Match($existing)
+if ($secMatch.Success) {
+    $sectionStart = $secMatch.Index + $secMatch.Length
+    $resto = $existing.Substring($sectionStart)
+    $nextTop = [regex]::Match($resto, '(?m)^[^\s#]')
+    $sectionEnd = $existing.Length
+    if ($nextTop.Success) { $sectionEnd = $sectionStart + $nextTop.Index }
+    $span = $existing.Substring($sectionStart, $sectionEnd - $sectionStart)
+
+    $keyMatch = $keyRegex.Match($span)
+    if ($keyMatch.Success) {
+        $current = $keyMatch.Groups[2].Value
+        if ($current -eq $Mode) {
+            Write-Host "==> [OK] $ConfigName ya tiene protected_branch_push: $Mode -- sin cambios."
+            exit 0
+        }
+        $backup = "$ConfigPath.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        Copy-Item -LiteralPath $ConfigPath -Destination $backup
+        # MatchEvaluator a proposito: un replacement string interpretaria `$1`
+        # y cualquier `$` del valor (leccion de install-repo-hygiene.ps1).
+        $evaluator = { param($m) $m.Groups[1].Value + $Mode + $m.Groups[3].Value }.GetNewClosure()
+        $updated = $existing.Substring(0, $sectionStart) + $keyRegex.Replace($span, $evaluator, 1) + $existing.Substring($sectionEnd)
+        [System.IO.File]::WriteAllText($ConfigPath, $updated, $Utf8NoBom)
+        Write-Host "==> [OK] protected_branch_push: $current -> $Mode (backup en $(Split-Path -Leaf $backup))."
         exit 0
     }
-    $backup = "$ConfigPath.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-    Copy-Item -LiteralPath $ConfigPath -Destination $backup
-    # MatchEvaluator a proposito: un replacement string interpretaria `$1`
-    # y cualquier `$` del valor (leccion de install-repo-hygiene.ps1).
-    $evaluator = { param($m) $m.Groups[1].Value + $Mode + $m.Groups[3].Value }.GetNewClosure()
-    $updated = $keyRegex.Replace($existing, $evaluator, 1)
-    [System.IO.File]::WriteAllText($ConfigPath, $updated, $Utf8NoBom)
-    Write-Host "==> [OK] protected_branch_push: $current -> $Mode (backup en $(Split-Path -Leaf $backup))."
-    exit 0
-}
 
-$safetyRegex = [regex]'(?m)^safety[ \t]*:[ \t]*\r?$'
-if ($safetyRegex.IsMatch($existing)) {
     # Hay seccion safety: sin nuestra clave -- se inserta adentro, sin tocar
     # el resto de la seccion.
     $backup = "$ConfigPath.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
