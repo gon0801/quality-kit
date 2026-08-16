@@ -75,6 +75,10 @@ safety:
   protected_branch_push: __MODE__
 '@
 $PolicyBlock = $PolicyBlock.Replace('__MODE__', $Mode)
+# Newline final SIEMPRE: un here-string no lo trae, y un archivo sin EOL
+# final rompe el candado end-of-file-fixer en el primer commit del yaml
+# (medido 2026-08-15 en goncloud-MCP-2/accounting).
+if (-not $PolicyBlock.EndsWith("`n")) { $PolicyBlock += "`n" }
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
     [System.IO.File]::WriteAllText($ConfigPath, $PolicyBlock, $Utf8NoBom)

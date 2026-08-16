@@ -2256,6 +2256,7 @@ Assert-True ($null -ne $bpYaml -and $bpYaml -match '(?m)^safety:') 'the config h
 Assert-True ($bpYaml -match '(?m)^  protected_branch_push: allow$') 'the default mode written is allow, indented under safety'
 Assert-True ($bpYaml -match 'Decision del operador') 'the config carries the WHY comment (operator decision, agent blocked by control-plane)'
 Assert-True ($bpYaml -match '`ask`' -and $bpYaml -notmatch [char]7) 'the comment backticks survive literally (no PowerShell escape mangling)'
+Assert-True ($bpYaml.EndsWith("allow`n")) 'the created yaml ends with a final newline (end-of-file-fixer would reject it on first commit otherwise)'
 
 $rBp2 = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptArgs @('-RepoPath', $bpRepo)
 Assert-True ($rBp2.ExitCode -eq 0 -and $rBp2.Stdout -match 'sin cambios') 'a re-run with the same mode reports no-change' "stdout=$($rBp2.Stdout)"
@@ -2294,6 +2295,7 @@ $rBpAppend = Invoke-ScriptCapture -ScriptPath $InstallBranchPushScript -ScriptAr
 Assert-True ($rBpAppend.ExitCode -eq 0 -and $rBpAppend.Stdout -match 'agregado al final') 'a config with no safety section gets the whole block appended' "stdout=$($rBpAppend.Stdout)"
 $bpYamlAppend = Read-TextFile -Path $bpConfigPath4
 Assert-True ($bpYamlAppend -match '(?m)^workflow:' -and $bpYamlAppend -match '(?m)^  protected_branch_push: allow$') 'the original section and the appended block coexist'
+Assert-True ($bpYamlAppend.EndsWith("allow`n")) 'the appended block also leaves a final newline'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 8d: cross-review 2026-08-15 -- clave acotada a safety, comentarios inline, advertencia allow-sin-red ==='
