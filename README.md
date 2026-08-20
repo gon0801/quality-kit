@@ -153,13 +153,15 @@ frescos, no la misma IA revisandose a si misma.
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con kimi
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con codex -Alcance staged
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con grok
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con qwen
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi -Archivos "engines/bid_motor.py,tests/test_bid_motor.py"
 ```
 
 - `-Con` (obligatorio): que IA hace la revision -- `kimi`, `codex`,
-  `claude`, o `auto`.
-- `-Con auto`: prueba la cadena `claude -> kimi -> codex` (el cerebro mas
+  `claude`, `grok`, `qwen`, o `auto`.
+- `-Con auto`: prueba la cadena `claude -> grok -> kimi -> qwen -> codex` (el cerebro mas
   fuerte primero) y usa el PRIMERO que entregue una revision de verdad,
   saltando al que pongas en `-Excluir` (la IA que escribio el cambio: una
   IA no debe revisar su propio trabajo). Si un candidato no esta instalado
@@ -220,10 +222,12 @@ directo como texto. El archivo temporal se borra solo al terminar.
 La IA responde con una lista numerada de hallazgos (cada uno con severidad
 alta/media/baja) o, si no encuentra nada que objetar, la palabra `LGTM`.
 
-### Confirmado en vivo, las tres IAs
+### Como se invoca cada CLI
 
-Las tres CLIs fueron probadas de verdad (no solo leyendo su documentacion)
-con diffs de ejemplo, varias veces cada una:
+kimi, claude y codex fueron probadas de verdad (no solo leyendo su
+documentacion) con diffs de ejemplo, varias veces cada una. grok y
+qwen estan cableadas contra sus flags headless documentados; todavia
+no tienen una ronda en vivo con un diff real:
 
 - **kimi -p**: funciona directo, sin nada especial que configurar. Rapido
   (segundos) incluso pidiendole una revision real con hallazgos.
@@ -250,6 +254,19 @@ con diffs de ejemplo, varias veces cada una:
      `cross-review.ps1` controle. Si `-Con codex` tarda mucho, es
      esperable, no un cuelgue del script -- pero si preferis una revision
      rapida, `kimi` o `claude` fueron mas predecibles en las pruebas.
+
+- **grok -p**: headless single-turn (`--single`). Se lanza con
+  `--no-subagents`, `--disable-web-search`, `--always-approve` y un
+  allowlist de herramientas de solo lectura (`read_file,grep,list_dir`)
+  para que pueda verificar codigo fuera del diff sin editar y sin
+  colgarse en un prompt de permisos. Cableado contra la CLI real de
+  esta maquina (`grok.exe`); no es una prueba en vivo con un diff
+  real -- esa queda para cuando se use de verdad.
+- **qwen -p**: no interactivo, con `--approval-mode plan` (solo
+  analisis, no edita ni corre shell), `--safe-mode` (sin skills,
+  hooks ni MCP) y `-o text`. En esta maquina `qwen` es un `.cmd`,
+  igual que `codex`, y `cross-review.ps1` ya lo lanza via
+  `cmd.exe /c`. Tampoco tiene prueba en vivo con un diff real todavia.
 
 Ver la seccion de troubleshooting mas abajo para mas detalle sobre estos
 dos puntos de Codex, y por si en tu maquina especifica `codex` pide
