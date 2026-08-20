@@ -7,11 +7,14 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con kimi
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con codex -Alcance staged
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
+#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con grok
+#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con qwen
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
 #
 # -Con auto: try the strongest available reviewer first and fall back down
-# the chain (claude -> kimi -> codex), skipping -Excluir (the AI that wrote
-# the change). claude is always invoked with ANTHROPIC_*, CLAUDE_CODE_* and
+# the chain (claude -> grok -> kimi -> qwen -> codex), skipping -Excluir
+# (the AI that wrote the change). claude is always invoked with ANTHROPIC_*,
+# CLAUDE_CODE_* and
 # CLAUDE_CONFIG_DIR env vars stripped, so env-var redirections (a
 # 'glm'-launched session, Bedrock/Vertex toggles, a relocated config tree,
 # an injected OAuth token or API-key helper) cannot steer the review away
@@ -80,15 +83,16 @@
 # three) -- so that is the one strategy this script uses for all of them.
 
 param(
-    # 'auto' = probar la cadena claude -> kimi -> codex (el cerebro mas fuerte
-    # primero) y usar el primero que responda, saltando -Excluir.
+    # 'auto' = probar la cadena claude -> grok -> kimi -> qwen -> codex
+    # (el cerebro mas fuerte primero) y usar el primero que responda,
+    # saltando -Excluir.
     [Parameter(Mandatory = $true)]
-    [ValidateSet('kimi', 'codex', 'claude', 'auto')]
+    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', 'auto')]
     [string]$Con,
 
     # La IA que ESCRIBIO el cambio, para saltarla en la cadena de 'auto':
     # una IA no debe revisar su propio trabajo.
-    [ValidateSet('kimi', 'codex', 'claude', '')]
+    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', '')]
     [string]$Excluir = '',
 
     [ValidateSet('staged', 'working', 'last-commit')]
@@ -290,6 +294,26 @@ function Get-CliInvocation {
     } elseif ($Con -eq 'claude') {
         $cliArgsText = "-p $escapedPrompt"
         $resolved = Resolve-CliExePath -Name 'claude'
+    } elseif ($Con -eq 'grok') {
+        # grok -p / --single: headless, imprime a stdout y sale (docs
+        # oficiales). --tools allowlist = solo lectura, para que pueda
+        # verificar codigo fuera del diff (clausula VERIFICAR) sin poder
+        # editar. --always-approve evita el cuelgue de permiso en headless
+        # (mismo modo de falla que claude, 2026-07-05). --no-subagents +
+        # --disable-web-search: no cargar skills/workflows (incidente real
+        # de codex + harness-review, 2026-08-13).
+        $tools = ConvertTo-WindowsCliArg -Value 'read_file,grep,list_dir'
+        $cliArgsText = "-p $escapedPrompt --output-format plain --no-subagents --disable-web-search --always-approve --tools $tools"
+        $resolved = Resolve-CliExePath -Name 'grok'
+    } elseif ($Con -eq 'qwen') {
+        # qwen -p = no interactivo. --approval-mode plan = solo analisis
+        # (no edita ni corre shell). --safe-mode apaga skills/hooks/MCP
+        # (mismo incidente de "cargo su skill de review y no miro el
+        # diff"). -o text = stdout plano, no JSON. qwen en esta maquina
+        # es un .cmd: Resolve-CliExePath + el wrap de cmd.exe /c de
+        # abajo ya cubren ese caso (igual que codex).
+        $cliArgsText = "-p $escapedPrompt --approval-mode plan --safe-mode -o text"
+        $resolved = Resolve-CliExePath -Name 'qwen'
     } else {
         throw "CLI desconocido: $Con"
     }
@@ -424,14 +448,15 @@ if (-not (Test-IsGitRepo -RepoPath $RepoPath)) {
 # validacion (p.ej. pedir que una IA revise su propio cambio) falle claro
 # incluso cuando el diff este vacio. En 'auto' se intenta el cerebro mas
 # fuerte primero (claude = el modelo default del plan de la cuenta, que
-# sigue solo las mejoras de modelo), despues kimi (rapido), despues codex
+# sigue solo las mejoras de modelo), despues grok (otro frontier),
+# despues kimi (rapido), despues qwen (plan/read-only), despues codex
 # (capaz pero de tiempos variables en esta maquina) -- saltando -Excluir.
 # Fail-open: si un candidato no esta instalado o no entrega revision, se
 # pasa al siguiente; si NINGUNO responde, exit 3 para que quien llama
 # (p.ej. el harness de SummonAI) caiga a su revisor interno y lo diga en
 # su recibo.
 if ($Con -eq 'auto') {
-    $chain = @('claude', 'kimi', 'codex') | Where-Object { $_ -ne $Excluir }
+    $chain = @('claude', 'grok', 'kimi', 'qwen', 'codex') | Where-Object { $_ -ne $Excluir }
     Write-Host "Cadena auto: $($chain -join ' -> ')$(if ($Excluir) { " (excluido: $Excluir, escribio el cambio)" })"
     # En modo single hay validacion dura (-Excluir == -Con => error), pero en
     # auto no habia NINGUNA: la cadena arranca por claude, que es casi siempre
@@ -524,7 +549,7 @@ try {
         }
 
         # claude: diff inline por stdin + prompt sin lecturas de archivo (ver
-        # Build-ReviewPromptInline); kimi/codex siguen leyendo el temp file.
+        # Build-ReviewPromptInline); kimi/codex/grok/qwen leen el temp file.
         $candidatePrompt = $prompt
         $candidateStdin = ''
         if ($candidate -eq 'claude') {
