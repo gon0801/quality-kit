@@ -1941,6 +1941,15 @@ Assert-True (($rAmbos.Stdout + $rAmbos.Stderr) -match 'excluyentes') 'the -Alcan
 $rRangoMalo = Invoke-CrossReviewDryRun -RepoPath $rangoRepo -Con 'kimi' -Rango 'noexiste..HEAD'
 Assert-True ($rRangoMalo.ExitCode -eq 1) 'un -Rango inexistente fail-closea con exit 1, sin invocar revisor' "exit=$($rRangoMalo.ExitCode)"
 Assert-True ($rRangoMalo.Stdout -match 'git fallo') 'el rango mal tipeado reporta el fallo de git, no lo viaja como diff'
+# Rango con forma de OPCION de git (hallazgo Greptile P1, PR kit #2):
+# '--cached'/'--stat' cambiarian el diff en silencio y la revision seria de
+# OTRO alcance con apariencia de exito. Un rev suelto ('HEAD') tampoco es un
+# rango (seria diff contra el working tree). Ambos se rechazan de entrada.
+$rRangoOpcion = Invoke-CrossReviewDryRun -RepoPath $rangoRepo -Con 'kimi' -Rango '--cached'
+Assert-True ($rRangoOpcion.ExitCode -ne 0) '-Rango con valor-opcion (--cached) es rechazado antes de correr git' "exit=$($rRangoOpcion.ExitCode)"
+Assert-True (($rRangoOpcion.Stdout + $rRangoOpcion.Stderr) -match 'no tiene la forma') 'el rechazo explica que se espera un rango a..b'
+$rRangoRevSuelto = Invoke-CrossReviewDryRun -RepoPath $rangoRepo -Con 'kimi' -Rango 'HEAD'
+Assert-True ($rRangoRevSuelto.ExitCode -ne 0) '-Rango con un rev suelto (HEAD, sin ..) es rechazado: eso es diff contra el working tree, no un rango' "exit=$($rRangoRevSuelto.ExitCode)"
 # qwen por stdin: en plan mode no puede aprobar read_file (cuelgue) y el
 # argv se desborda con diffs grandes -- el diff viaja por el pipe y el
 # prompt NO pide leer archivo (misma entrega que claude).

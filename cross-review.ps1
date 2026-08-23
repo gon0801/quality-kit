@@ -505,6 +505,14 @@ if ($Con -eq 'auto') {
 if ($Rango -and $Alcance) {
     throw "-Rango '$Rango' y -Alcance '$Alcance' son excluyentes: ambos eligen el diff a revisar. Pasa solo uno."
 }
+# Un -Rango que empieza con '-' (ej '--cached', '--stat') NO es un rango:
+# git lo tomaria como OPCION y el diff seria OTRO (staged, solo nombres...)
+# con una revision "exitosa" del alcance equivocado (hallazgo Greptile P1,
+# PR #2). Y un valor sin '..' (ej 'HEAD') es un diff contra el working tree,
+# no el rango multi-commit que -Rango promete. Se exige la forma 'a..b'.
+if ($Rango -and (($Rango -match '^[-/]') -or ($Rango -notmatch '\.\.'))) {
+    throw "-Rango '$Rango' no tiene la forma 'a..b' (rango de commits): un valor con '-' inicial seria una opcion de git y un rev suelto no es un rango."
+}
 $alcanceLabelForDisplay = if ($Rango) { "rango $Rango" } else { $Alcance }
 if ([string]::IsNullOrEmpty($alcanceLabelForDisplay)) { $alcanceLabelForDisplay = 'combinado (stage + working)' }
 Write-Host "Alcance: $alcanceLabelForDisplay"
