@@ -177,13 +177,14 @@ function Invoke-HealRepo {
 }
 
 function Invoke-CrossReviewDryRun {
-    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '')
+    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '', [string]$Rango = '')
     $scriptArgs = @('-Con', $Con, '-RepoPath', $RepoPath, '-DryRun')
     if ($Alcance -ne '') { $scriptArgs += @('-Alcance', $Alcance) }
     if ($Excluir -ne '') { $scriptArgs += @('-Excluir', $Excluir) }
     # Un solo string (posiblemente con comas), igual que como llega desde
     # 'powershell -File' en el mundo real -- el split lo hace el script.
     if ($Archivos -ne '') { $scriptArgs += @('-Archivos', $Archivos) }
+    if ($Rango -ne '') { $scriptArgs += @('-Rango', $Rango) }
     return Invoke-ScriptCapture -ScriptPath $CrossReviewScript -ScriptArgs $scriptArgs
 }
 
@@ -1907,6 +1908,47 @@ foreach ($prof in @('.codex', '.cursor', '.agents')) {
     $patched41 = Read-TextFile -Path (Join-Path $healHome41 (Join-Path $prof 'hooks\summonaikit-harness.sh'))
     Assert-True ($patched41 -match 'SAIKIT-SENTINEL-GATE') "Task 4.1 DoD #1: el perfil restante $prof SI recibe el sentinel -- los 3 perfiles siguen parcheandose igual" "profile=$prof content=$patched41"
 }
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3r (goncloud-Orbit 2026-08-23): -Rango reviews a multi-commit range; qwen gets the diff by stdin ==='
+# El caso real: una fase cerro con 5 commits commiteados y -Alcance solo
+# sabia mirar staged/working/last-commit -- los callers terminaban
+# replicando la invocacion headless a mano para conseguir el diff entero.
+$rangoRepo = New-FakeGitRepo -Name 'fake-rango-repo'
+Write-Utf8NoBomFile -Path (Join-Path $rangoRepo 'uno.py') -Content "def uno():`n    return 1`n"
+Push-Location -LiteralPath $rangoRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'commit base') } finally { Pop-Location }
+Write-Utf8NoBomFile -Path (Join-Path $rangoRepo 'dos.py') -Content "def dos():`n    return 2  # marker_rango_dos`n"
+Push-Location -LiteralPath $rangoRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'segundo commit del rango') } finally { Pop-Location }
+# Happy path: el rango entero (dos commits) entra al diff y al label.
+$rRango = Invoke-CrossReviewDryRun -RepoPath $rangoRepo -Con 'kimi' -Rango 'HEAD~1..HEAD'
+Assert-True ($rRango.ExitCode -eq 0) '-Rango HEAD~1..HEAD -DryRun exits 0' "exit=$($rRango.ExitCode) stderr=$($rRango.Stderr)"
+Assert-True ($rRango.Stdout -match [regex]::Escape('Alcance: rango HEAD~1..HEAD')) '-Rango is reflected in the output label'
+$tempRango = [regex]::Match($rRango.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
+Assert-True ($tempRango.Success) '-Rango DryRun still references a temp diff file'
+if ($tempRango.Success) {
+    $tempRangoPath = Join-Path ([System.IO.Path]::GetTempPath()) $tempRango.Value
+    $tempRangoContent = Read-TextFile -Path $tempRangoPath
+    Assert-True ($tempRangoContent -match 'marker_rango_dos') '-Rango diff actually contains the SECOND commit of the range (multi-commit, no solo last-commit)'
+    Remove-Item -LiteralPath $tempRangoPath -Force -ErrorAction SilentlyContinue
+}
+# Exclusion con -Alcance: dos parametros que eligen el diff = ambiguo, se reusa ruidosamente.
+$rAmbos = Invoke-CrossReviewDryRun -RepoPath $rangoRepo -Con 'kimi' -Alcance 'staged' -Rango 'HEAD~1..HEAD'
+Assert-True ($rAmbos.ExitCode -ne 0) '-Alcance y -Rango juntos son rechazados (ambos eligen el diff)' "exit=$($rAmbos.ExitCode)"
+Assert-True (($rAmbos.Stdout + $rAmbos.Stderr) -match 'excluyentes') 'the -Alcance/-Rango refusal explains itself plainly'
+# Rango mal tipeado: git falla y NADIE es invocado (fail-closed, mismo contrato que el grupo 3g).
+$rRangoMalo = Invoke-CrossReviewDryRun -RepoPath $rangoRepo -Con 'kimi' -Rango 'noexiste..HEAD'
+Assert-True ($rRangoMalo.ExitCode -eq 1) 'un -Rango inexistente fail-closea con exit 1, sin invocar revisor' "exit=$($rRangoMalo.ExitCode)"
+Assert-True ($rRangoMalo.Stdout -match 'git fallo') 'el rango mal tipeado reporta el fallo de git, no lo viaja como diff'
+# qwen por stdin: en plan mode no puede aprobar read_file (cuelgue) y el
+# argv se desborda con diffs grandes -- el diff viaja por el pipe y el
+# prompt NO pide leer archivo (misma entrega que claude).
+$rQwenStdin = Invoke-CrossReviewDryRun -RepoPath $rangoRepo -Con 'qwen' -Rango 'HEAD~1..HEAD'
+Assert-True ($rQwenStdin.ExitCode -eq 0) '-Con qwen -Rango -DryRun exits 0' "exit=$($rQwenStdin.ExitCode) stderr=$($rQwenStdin.Stderr)"
+Assert-True ($rQwenStdin.Stdout -match [regex]::Escape('a qwen el diff se le entrega inline por stdin')) 'qwen DryRun announces the stdin delivery'
+Assert-True ($rQwenStdin.Stdout -notmatch [regex]::Escape("Lee el archivo '")) 'qwen prompt does NOT ask to read a file (plan mode cannot approve read_file in headless)'
+Assert-True ($rQwenStdin.Stdout -match [regex]::Escape('viene un diff de git')) 'qwen prompt says the diff comes inline in the message'
 
 # ------------------------------------------------------------------
 # TEST GROUP 4: install-ai-rules.ps1 / uninstall-ai-rules.ps1 against FAKE

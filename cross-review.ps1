@@ -9,6 +9,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con grok
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con qwen
+#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con qwen -Rango 56cb07f..HEAD
 #   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
 #
 # -Con auto: try the strongest available reviewer first and fall back down
@@ -47,7 +48,9 @@
 # reviewer.
 #
 # -Alcance defaults to the combined working-tree + staged diff against HEAD
-# (everything not yet committed) when not specified.
+# (everything not yet committed) when not specified. For an ALREADY COMMITTED
+# multi-commit task (a whole phase on a branch), -Rango '<a>..<b>' reviews the
+# full commit range instead (mutually exclusive with -Alcance).
 #
 # -Archivos limits the diff to the given paths (git pathspecs, relative to
 # the repo root; comma-separated in one argument or repeated). Born from a
@@ -98,6 +101,14 @@ param(
     [ValidateSet('staged', 'working', 'last-commit')]
     [string]$Alcance = '',
 
+    # Rango de COMMITS multi-commit para revisar una tarea ya commiteada
+    # (ej: '56cb07f..HEAD', 'v1..v2'). Excluyente con -Alcance. Caso real
+    # (2026-08-23, goncloud-Orbit): una fase cerro con 5 commits y las unicas
+    # salidas del script eran staged/working/last-commit -- revisar 'solo el
+    # ultimo commit' deja 4 fuera y los callers terminaban replicando la
+    # invocacion headless a mano para conseguir el diff del rango.
+    [string]$Rango = '',
+
     # Pathspecs (relativos a la raiz del repo) para limitar el diff a los
     # archivos de la TAREA en curso. Acepta lista separada por comas en un
     # solo argumento (lo que llega desde 'powershell -File') o elementos
@@ -136,7 +147,12 @@ function Test-IsGitRepo {
 # ------------------------------------------------------------------
 
 function Get-ReviewDiff {
-    param([string]$RepoPath, [string]$Alcance, [string[]]$FileScope = @())
+    param(
+        [string]$RepoPath,
+        [string]$Alcance,
+        [string[]]$FileScope = @(),
+        [string]$Rango = ''
+    )
     # El separador '--' + pathspecs limita cada diff a los archivos pedidos;
     # con $FileScope vacio, $pathspecArgs queda vacio y los comandos son
     # identicos a los de siempre.
@@ -152,7 +168,13 @@ function Get-ReviewDiff {
     $savedEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        if ($Alcance -eq 'staged') {
+        if ($Rango) {
+            # Un rango de commits (ej '56cb07f..HEAD'): git valida el rango
+            # por si mismo y el guard de ExitCode de abajo ya fail-closea un
+            # rango mal tipeado (mismo caso real que el de repo sin commits).
+            $lines = @(& git diff $Rango @pathspecArgs 2>&1)
+            $label = "el rango de commits $Rango (git diff $Rango)"
+        } elseif ($Alcance -eq 'staged') {
             $lines = @(& git diff --cached @pathspecArgs 2>&1)
             $label = 'cambios en stage (git diff --cached)'
         } elseif ($Alcance -eq 'working') {
@@ -309,9 +331,13 @@ function Get-CliInvocation {
         # qwen -p = no interactivo. --approval-mode plan = solo analisis
         # (no edita ni corre shell). --safe-mode apaga skills/hooks/MCP
         # (mismo incidente de "cargo su skill de review y no miro el
-        # diff"). -o text = stdout plano, no JSON. qwen en esta maquina
-        # es un .cmd: Resolve-CliExePath + el wrap de cmd.exe /c de
-        # abajo ya cubren ese caso (igual que codex).
+        # diff"). -o text = stdout plano, no JSON. El PROMPT que llega
+        # aqui son solo las instrucciones (cortas): el DIFF viaja por
+        # stdin (ver la entrega inline en el loop de candidatos -- qwen
+        # en plan no puede aprobar read_file y el argv se desborda con
+        # diffs grandes). qwen en esta maquina es un .cmd:
+        # Resolve-CliExePath + el wrap de cmd.exe /c de abajo ya cubren
+        # ese caso (igual que codex).
         $cliArgsText = "-p $escapedPrompt --approval-mode plan --safe-mode -o text"
         $resolved = Resolve-CliExePath -Name 'qwen'
     } else {
@@ -474,7 +500,12 @@ if ($Con -eq 'auto') {
     $chain = @($Con)
 }
 
-$alcanceLabelForDisplay = $Alcance
+# -Rango y -Alcance dicen DOS cosas sobre lo mismo (que diff armar): dar
+# ambos es ambiguo y no se adivina cual manda -- se para ruidosamente.
+if ($Rango -and $Alcance) {
+    throw "-Rango '$Rango' y -Alcance '$Alcance' son excluyentes: ambos eligen el diff a revisar. Pasa solo uno."
+}
+$alcanceLabelForDisplay = if ($Rango) { "rango $Rango" } else { $Alcance }
 if ([string]::IsNullOrEmpty($alcanceLabelForDisplay)) { $alcanceLabelForDisplay = 'combinado (stage + working)' }
 Write-Host "Alcance: $alcanceLabelForDisplay"
 
@@ -490,7 +521,7 @@ if ($fileScope.Count -gt 0) {
     Write-Host "Archivos (pathspec de la tarea): $($fileScope -join ', ')"
 }
 
-$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope
+$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope -Rango $Rango
 
 # git puede FALLAR, y su stderr viene mezclado en el texto del diff (el "2>&1"
 # de arriba es a proposito, para conservar el diagnostico). Sin mirar el codigo
@@ -548,11 +579,25 @@ try {
             throw "No encontre '$candidate' en el PATH de esta maquina. Confirma que la CLI esta instalada y accesible."
         }
 
-        # claude: diff inline por stdin + prompt sin lecturas de archivo (ver
-        # Build-ReviewPromptInline); kimi/codex/grok/qwen leen el temp file.
+        # claude y qwen: diff inline por stdin + prompt sin lecturas de
+        # archivo (ver Build-ReviewPromptInline); kimi/codex/grok leen el
+        # temp file.
+        # qwen se suma a la entrega inline por DOS modos de falla medidos
+        # (2026-08-23, goncloud-Orbit, ronda con diff de fase multi-commit):
+        # (a) con el prompt que pide leer el temp file, qwen en
+        #     --approval-mode plan PIDE APROBACION de read_file que nadie
+        #     puede dar en headless y se queda colgado pidiendo permiso
+        #     (warning en stdout y cero revision -- mismo diagnostico que el
+        #     cuelgue historico de claude, pero por permisos);
+        # (b) la alternativa obvia (inflar el prompt con el diff) muere con
+        #     "Argument list too long" en el shim npm de Windows en cuanto
+        #     el diff crece (~100KB).
+        # La salida es la propia documentacion de qwen: -p es "Appended to
+        # input on stdin (if any)" -- instrucciones cortas en -p, diff por
+        # el pipe. Sin argv, sin permisos, sin herramientas.
         $candidatePrompt = $prompt
         $candidateStdin = ''
-        if ($candidate -eq 'claude') {
+        if ($candidate -eq 'claude' -or $candidate -eq 'qwen') {
             $candidatePrompt = Build-ReviewPromptInline -Label $diffResult.Label -RepoName $repoName
             $candidateStdin = "=== DIFF ===`n" + $cappedDiff
         }
