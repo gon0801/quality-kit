@@ -487,6 +487,21 @@ function Get-PythonTestRunnerCandidates {
 # was caught by a reviewer bot on the Orbit fix).
 function Test-CiRunsFullPytest {
     param([string]$RepoPath)
+    # ORDEN (hallazgo Greptile PR #3): en un repo NUEVO con remoto de GitHub
+    # esta deteccion corre ANTES de que Copy-QualityWorkflowIfSafe escriba
+    # quality.yml, asi que sin esto el repo nacia con la bateria completa en
+    # local aunque la MISMA corrida le instalara el CI que la corre. La
+    # plantilla del kit (templates/quality.yml) corre `pytest -q` entero: si
+    # el kit va a instalarla, cuenta como CI que corre la suite.
+    $nuestroWorkflow = Join-Path (Join-Path $RepoPath '.github\workflows') 'quality.yml'
+    if (Test-HasGithubRemote -RepoPath $RepoPath) {
+        if (-not (Test-Path -LiteralPath $nuestroWorkflow)) { return $true }
+        $existente = Read-TextFile -Path $nuestroWorkflow
+        # Un quality.yml AJENO no cuenta aca: no sabemos que corre, y ademas
+        # el kit no lo pisa (Copy-QualityWorkflowIfSafe lo respeta). Cae al
+        # analisis literal de abajo, que mira lo que realmente ejecuta.
+        if ($null -ne $existente -and $existente -match [regex]::Escape($WorkflowMarker)) { return $true }
+    }
     $workflowsDir = Join-Path $RepoPath '.github\workflows'
     if (-not (Test-Path -LiteralPath $workflowsDir)) { return $false }
     foreach ($wf in Get-ChildItem -LiteralPath $workflowsDir -Filter '*.yml' -File -ErrorAction SilentlyContinue) {
@@ -498,8 +513,14 @@ function Test-CiRunsFullPytest {
             if ($sinEnv -match '^(pip|pip3|uv|poetry|npm|apt|apt-get|echo|printf)\b') { continue }
             if ($sinEnv -notmatch '(^|\s|/)pytest(\s|$)') { continue }
             $despues = ($sinEnv -split '(^|\s|/)pytest(\s|$)')[-1]
-            # con rutas de test es una corrida ACOTADA: no cuenta como bateria
-            if ($despues -match '(^|\s)[^-\s]*(tests?/|\.py)(\s|$)') { continue }
+            # ACOTADA por filtro (-k/-m/--deselect/--last-failed) tampoco es la
+            # bateria: corre un subconjunto (hallazgo Greptile PR #3).
+            if ($despues -match '(^|\s)(-k|-m|--deselect|--lf|--last-failed|--ignore)(\s|=)') { continue }
+            # ACOTADA por ruta: cualquier argumento posicional (no-opcion) es un
+            # path o nodeid -- `pytest tests`, `pytest tests/x.py::test` incluidos.
+            $args = ($despues -split '\s+') | Where-Object { $_ -ne '' }
+            $posicionales = @($args | Where-Object { $_ -notmatch '^-' -and $_ -notmatch '^[A-Za-z_][A-Za-z0-9_]*=' })
+            if ($posicionales.Count -gt 0) { continue }
             return $true
         }
     }
