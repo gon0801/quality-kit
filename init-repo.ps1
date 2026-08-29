@@ -494,7 +494,14 @@ function Test-CiRunsFullPytest {
     # plantilla del kit (templates/quality.yml) corre `pytest -q` entero: si
     # el kit va a instalarla, cuenta como CI que corre la suite.
     $nuestroWorkflow = Join-Path (Join-Path $RepoPath '.github\workflows') 'quality.yml'
-    if (Test-HasGithubRemote -RepoPath $RepoPath) {
+    # El paso de tests de templates/quality.yml esta condicionado a
+    # `hashFiles('pyproject.toml', 'requirements.txt') != ''`: SIN uno de esos
+    # manifiestos CI se saltea la suite, y si ademas aligeraramos el hook local
+    # la bateria no correria en NINGUN lado (hallazgo Greptile PR #3, 2a
+    # pasada). Se exige el mismo predicado que usa el workflow.
+    $tieneManifiesto = (Test-Path -LiteralPath (Join-Path $RepoPath 'pyproject.toml')) -or
+                       (Test-Path -LiteralPath (Join-Path $RepoPath 'requirements.txt'))
+    if ($tieneManifiesto -and (Test-HasGithubRemote -RepoPath $RepoPath)) {
         if (-not (Test-Path -LiteralPath $nuestroWorkflow)) { return $true }
         $existente = Read-TextFile -Path $nuestroWorkflow
         # Un quality.yml AJENO no cuenta aca: no sabemos que corre, y ademas
