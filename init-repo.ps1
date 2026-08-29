@@ -512,6 +512,13 @@ function Test-CiRunsFullPytest {
     $workflowsDir = Join-Path $RepoPath '.github\workflows'
     if (-not (Test-Path -LiteralPath $workflowsDir)) { return $false }
     foreach ($wf in Get-ChildItem -LiteralPath $workflowsDir -Filter '*.yml' -File -ErrorAction SilentlyContinue) {
+        $contenido = Read-TextFile -Path $wf.FullName
+        # El workflow del KIT tiene su paso de tests condicionado al manifiesto:
+        # sin pyproject/requirements ese `pytest -q` NO corre, asi que leerlo
+        # literalmente mentiria (hallazgo Greptile PR #4: el guard del
+        # manifiesto se saltaba por esta segunda puerta).
+        if (-not $tieneManifiesto -and $null -ne $contenido -and
+            $contenido -match [regex]::Escape($WorkflowMarker)) { continue }
         foreach ($line in (Get-Content -LiteralPath $wf.FullName)) {
             $texto = $line.Trim()
             if ($texto -match '^[#-]') { continue }
