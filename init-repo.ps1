@@ -475,11 +475,70 @@ function Get-PythonTestRunnerCandidates {
     return ,$candidates
 }
 
+# Does this repo's CI already run the WHOLE Python suite? If it does, paying
+# the full battery again on every local push is duplication -- and an expensive
+# one: measured on a Windows machine the same suite took ~6 min locally vs
+# ~1.5-2 min in Linux CI, and it is paid on EVERY push (17 pushes in one day =
+# ~1.7 h of pure waiting; goncloud-Orbit, 2026-08-29). The gate is not dropped,
+# it MOVES: pre-push keeps a fast smoke (collection) and CI owns the battery.
+#
+# "Runs the suite" means an actual pytest INVOCATION with no test paths -- a
+# `pip install ... pytest ...` line does not count (that exact false positive
+# was caught by a reviewer bot on the Orbit fix).
+function Test-CiRunsFullPytest {
+    param([string]$RepoPath)
+    # ORDEN (hallazgo Greptile PR #3): en un repo NUEVO con remoto de GitHub
+    # esta deteccion corre ANTES de que Copy-QualityWorkflowIfSafe escriba
+    # quality.yml, asi que sin esto el repo nacia con la bateria completa en
+    # local aunque la MISMA corrida le instalara el CI que la corre. La
+    # plantilla del kit (templates/quality.yml) corre `pytest -q` entero: si
+    # el kit va a instalarla, cuenta como CI que corre la suite.
+    $nuestroWorkflow = Join-Path (Join-Path $RepoPath '.github\workflows') 'quality.yml'
+    if (Test-HasGithubRemote -RepoPath $RepoPath) {
+        if (-not (Test-Path -LiteralPath $nuestroWorkflow)) { return $true }
+        $existente = Read-TextFile -Path $nuestroWorkflow
+        # Un quality.yml AJENO no cuenta aca: no sabemos que corre, y ademas
+        # el kit no lo pisa (Copy-QualityWorkflowIfSafe lo respeta). Cae al
+        # analisis literal de abajo, que mira lo que realmente ejecuta.
+        if ($null -ne $existente -and $existente -match [regex]::Escape($WorkflowMarker)) { return $true }
+    }
+    $workflowsDir = Join-Path $RepoPath '.github\workflows'
+    if (-not (Test-Path -LiteralPath $workflowsDir)) { return $false }
+    foreach ($wf in Get-ChildItem -LiteralPath $workflowsDir -Filter '*.yml' -File -ErrorAction SilentlyContinue) {
+        foreach ($line in (Get-Content -LiteralPath $wf.FullName)) {
+            $texto = $line.Trim()
+            if ($texto -match '^[#-]') { continue }
+            # quitar prefijos de entorno tipo "PYTHONPATH=. pytest -q"
+            $sinEnv = [regex]::Replace($texto, '^(\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+', '')
+            if ($sinEnv -match '^(pip|pip3|uv|poetry|npm|apt|apt-get|echo|printf)\b') { continue }
+            if ($sinEnv -notmatch '(^|\s|/)pytest(\s|$)') { continue }
+            $despues = ($sinEnv -split '(^|\s|/)pytest(\s|$)')[-1]
+            # ACOTADA por filtro (-k/-m/--deselect/--last-failed) tampoco es la
+            # bateria: corre un subconjunto (hallazgo Greptile PR #3).
+            if ($despues -match '(^|\s)(-k|-m|--deselect|--lf|--last-failed|--ignore)(\s|=)') { continue }
+            # ACOTADA por ruta: cualquier argumento posicional (no-opcion) es un
+            # path o nodeid -- `pytest tests`, `pytest tests/x.py::test` incluidos.
+            $args = ($despues -split '\s+') | Where-Object { $_ -ne '' }
+            $posicionales = @($args | Where-Object { $_ -notmatch '^-' -and $_ -notmatch '^[A-Za-z_][A-Za-z0-9_]*=' })
+            if ($posicionales.Count -gt 0) { continue }
+            return $true
+        }
+    }
+    return $false
+}
+
 # Computes the entry command for a freshly-chosen (not preserved-verbatim)
 # candidate, the same way the main flow used to build it inline.
 function Get-FreshEntryCmdForCandidate {
-    param([PSCustomObject]$Candidate, [string]$PythonExeForHook)
+    param([PSCustomObject]$Candidate, [string]$PythonExeForHook, [bool]$CiRunsFullSuite = $false)
     if ($Candidate.Type -eq 'pytest') {
+        if ($CiRunsFullSuite) {
+            # Smoke rapido y GENERICO: --collect-only importa todo el arbol de
+            # tests y su conftest, asi que caza el error de sintaxis / import
+            # roto / conftest reventado (lo que pondria CI en rojo al instante)
+            # en segundos, sin correr la bateria que CI ya corre.
+            return "$PythonExeForHook -m pytest -x -q --collect-only"
+        }
         return "$PythonExeForHook -m pytest -x -q"
     }
     if ($null -ne $Candidate.TestsDirInfo.ParentSubdir) {
@@ -914,6 +973,18 @@ if ($detected.Python) {
         $detected.PythonTestRunner = $existingHook.Type
         if ($existingHook.Type -eq 'pytest') { $detected.PytestEntryCmd = $existingHook.Entry }
         else { $detected.UnittestEntryCmd = $existingHook.Entry }
+        # Un candado que funciona JAMAS se toca solo (esa es la regla). Pero si
+        # esta pagando la bateria entera en cada push y CI ya la corre, eso es
+        # duplicacion cara (~6 min por push medidos en Windows): se AVISA, con
+        # el comando exacto, y lo decide la persona.
+        if ($existingHook.Type -eq 'pytest' -and
+            $existingHook.Entry -notmatch '--collect-only' -and
+            $existingHook.Entry -notmatch '(tests?/|\.py)(\s|$)' -and
+            (Test-CiRunsFullPytest -RepoPath $RepoPath)) {
+            Write-Host '==> AVISO: el candado de pre-push corre la bateria COMPLETA y CI ya la corre tambien. Es duplicacion cara (medido: ~6 min por push en Windows vs ~1.5-2 min en CI).'
+            Write-Host "    Si queres moverla: en .pre-commit-config.yaml deja el entry como '$($existingHook.Entry) --collect-only' (smoke rapido) y que CI siga corriendo la bateria entera."
+            Write-Host '    No lo cambio yo: un candado que funciona no se degrada sin tu decision.'
+        }
     } else {
         # STEP 2 -- fresh detection with a FALLBACK CHAIN: try each
         # candidate runner in priority order; the first one that actually
@@ -930,8 +1001,12 @@ if ($detected.Python) {
                 $attempts = New-Object System.Collections.Generic.List[string]
                 $chosenCandidate = $null
                 $chosenEntryCmd = ''
+                $ciCorreLaSuite = Test-CiRunsFullPytest -RepoPath $RepoPath
+                if ($ciCorreLaSuite) {
+                    Write-Host '==> CI ya corre la bateria completa de pytest: el candado de pre-push queda RAPIDO (smoke de coleccion) y la bateria se cobra UNA vez, en CI.'
+                }
                 foreach ($candidate in $candidates) {
-                    $entryCmd = Get-FreshEntryCmdForCandidate -Candidate $candidate -PythonExeForHook $pythonExeForHook
+                    $entryCmd = Get-FreshEntryCmdForCandidate -Candidate $candidate -PythonExeForHook $pythonExeForHook -CiRunsFullSuite $ciCorreLaSuite
                     Write-Host "==> Verificando el runner de pruebas ($($candidate.Type)) antes de instalar el candado de pre-push..."
                     $validation = Test-PythonRunnerValidates -RepoPath $RepoPath -PythonExeForHook $pythonExeForHook -RunnerPlan $candidate
                     if ($validation.Ok) {
