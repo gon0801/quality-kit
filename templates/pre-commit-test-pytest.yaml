@@ -2,6 +2,22 @@
 # verifica que funcione) pytest como runner. Corre en PRE-PUSH, no en
 # pre-commit: las pruebas (y sobre todo un backtest o una suite grande) son
 # demasiado lentas para correr en cada commit.
+#
+# DONDE SE COBRA LA BATERIA (decision de gon, 2026-08-29): UNA sola vez, y
+# donde es barata. Si el repo tiene CI que corre la suite entera
+# (.github/workflows/*.yml con una invocacion REAL de pytest sin rutas de
+# test -- un "pip install ... pytest ..." NO cuenta), init-repo.ps1 instala
+# aca un SMOKE rapido ("... -m pytest -x -q --collect-only": importa todo el
+# arbol de tests y su conftest, asi que caza sintaxis rota, import roto o
+# conftest reventado en segundos) y la bateria entera queda en CI. Si el repo
+# NO tiene esa CI, el entry es la bateria completa: ahi es la unica red. El
+# candado nunca se SALTA (--no-verify sigue prohibido); se MUEVE, que es
+# distinto. Incidente que lo motivo: en goncloud-Orbit la bateria local
+# costaba ~6 min POR PUSH en Windows contra ~1.5-2 min en CI y, con 17 pushes
+# en un dia, eran ~1.7 h de espera duplicada -- y como el candado no se puede
+# saltar, volvia en cada vuelta de review por mas que se acordara lo
+# contrario (se "corrigio" 5 veces antes de arreglar este archivo).
+#
 # El comando de la linea "entry:" de aca abajo lo arma init-repo.ps1:
 # normalmente "<python> -m pytest -x -q", pero si ya habia un candado de
 # pruebas funcionando de una corrida anterior, se reusa ese comando tal
