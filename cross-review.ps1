@@ -87,12 +87,12 @@ param(
     # (el cerebro mas fuerte primero) y usar el primero que responda,
     # saltando -Excluir.
     [Parameter(Mandatory = $true)]
-    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', 'auto')]
+    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm', 'auto')]
     [string]$Con,
 
     # La IA que ESCRIBIO el cambio, para saltarla en la cadena de 'auto':
     # una IA no debe revisar su propio trabajo.
-    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', '')]
+    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm', '')]
     [string]$Excluir = '',
 
     [ValidateSet('staged', 'working', 'last-commit')]
@@ -294,6 +294,20 @@ function Get-CliInvocation {
     } elseif ($Con -eq 'claude') {
         $cliArgsText = "-p $escapedPrompt"
         $resolved = Resolve-CliExePath -Name 'claude'
+    } elseif ($Con -eq 'glm') {
+        # glm NO es una CLI aparte: es un lanzador (npm) que exporta
+        # ANTHROPIC_BASE_URL hacia Z.AI y ejecuta `claude --model glm-5.2`.
+        # Por eso usa EXACTAMENTE los mismos argumentos que claude y el mismo
+        # camino de diff inline: comparten binario, asi que comparten el modo
+        # de falla (headless + lectura de archivos = cuelgue de permiso).
+        #
+        # El stripPrefixes de ANTHROPIC_*/CLAUDE_CODE_*/CLAUDE_CONFIG_DIR se
+        # le aplica IGUAL que a claude, y eso es deliberado: limpia lo que
+        # trajera la sesion padre y deja que el lanzador ponga las suyas
+        # despues. Resultado: la revision va a GLM de verdad, no a lo que
+        # apuntara el entorno heredado.
+        $cliArgsText = "-p $escapedPrompt"
+        $resolved = Resolve-CliExePath -Name 'glm'
     } elseif ($Con -eq 'grok') {
         # grok -p / --single: headless, imprime a stdout y sale (docs
         # oficiales). --tools allowlist = solo lectura, para que pueda
@@ -306,13 +320,29 @@ function Get-CliInvocation {
         $cliArgsText = "-p $escapedPrompt --output-format plain --no-subagents --disable-web-search --always-approve --tools $tools"
         $resolved = Resolve-CliExePath -Name 'grok'
     } elseif ($Con -eq 'qwen') {
-        # qwen -p = no interactivo. --approval-mode plan = solo analisis
-        # (no edita ni corre shell). --safe-mode apaga skills/hooks/MCP
-        # (mismo incidente de "cargo su skill de review y no miro el
-        # diff"). -o text = stdout plano, no JSON. qwen en esta maquina
-        # es un .cmd: Resolve-CliExePath + el wrap de cmd.exe /c de
-        # abajo ya cubren ese caso (igual que codex).
-        $cliArgsText = "-p $escapedPrompt --approval-mode plan --safe-mode -o text"
+        # qwen -p = no interactivo. -y aprueba las herramientas SOLO;
+        # sin el, qwen pide aprobacion para read_file, nadie puede darsela
+        # sin interaccion y el proceso se cuelga hasta el timeout (3 fallos
+        # identicos: ORBIT 05 1.6a, y dos veces el 2026-08-30). La bandera
+        # anterior --approval-mode plan NO EXISTE en qwen 0.21.13 (su help
+        # son 41 lineas y no la lista): se ignoraba en silencio, y de ahi
+        # el cuelgue.
+        #
+        # La seguridad NO viene de -y sino de la config GLOBAL de qwen
+        # (~/.qwen/settings.json, tools.exclude con run_shell_command,
+        # write_file, replace y edit): el revisor puede LEER el repo y no
+        # tiene con que escribir. Verificado el 2026-08-30 — pidiendole
+        # crear un archivo responde "no tengo herramienta para escribir" y
+        # el archivo no aparece.
+        #
+        # --safe-mode SE QUITO a proposito: apaga TODAS las customizaciones
+        # e incluye la config de herramientas, o sea anulaba la exclusion
+        # (verificado: con --safe-mode -y el archivo SI se creo). La
+        # defensa contra el incidente de "cargo su skill y no miro el
+        # diff" queda en el prompt, que ya ordena no usar skills.
+        # -o text = stdout plano, no JSON. qwen aqui es un .cmd:
+        # Resolve-CliExePath + el wrap de cmd.exe /c de abajo lo cubren.
+        $cliArgsText = "-p $escapedPrompt -y -o text"
         $resolved = Resolve-CliExePath -Name 'qwen'
     } else {
         throw "CLI desconocido: $Con"
@@ -456,7 +486,7 @@ if (-not (Test-IsGitRepo -RepoPath $RepoPath)) {
 # (p.ej. el harness de SummonAI) caiga a su revisor interno y lo diga en
 # su recibo.
 if ($Con -eq 'auto') {
-    $chain = @('claude', 'grok', 'kimi', 'qwen', 'codex') | Where-Object { $_ -ne $Excluir }
+    $chain = @('claude', 'glm', 'grok', 'kimi', 'qwen', 'codex') | Where-Object { $_ -ne $Excluir }
     Write-Host "Cadena auto: $($chain -join ' -> ')$(if ($Excluir) { " (excluido: $Excluir, escribio el cambio)" })"
     # En modo single hay validacion dura (-Excluir == -Con => error), pero en
     # auto no habia NINGUNA: la cadena arranca por claude, que es casi siempre
@@ -548,11 +578,12 @@ try {
             throw "No encontre '$candidate' en el PATH de esta maquina. Confirma que la CLI esta instalada y accesible."
         }
 
-        # claude: diff inline por stdin + prompt sin lecturas de archivo (ver
-        # Build-ReviewPromptInline); kimi/codex/grok/qwen leen el temp file.
+        # claude y glm: diff inline por stdin + prompt sin lecturas de archivo
+        # (ver Build-ReviewPromptInline); kimi/codex/grok/qwen leen el temp
+        # file. glm comparte binario con claude, asi que comparte el camino.
         $candidatePrompt = $prompt
         $candidateStdin = ''
-        if ($candidate -eq 'claude') {
+        if ($candidate -eq 'claude' -or $candidate -eq 'glm') {
             $candidatePrompt = Build-ReviewPromptInline -Label $diffResult.Label -RepoName $repoName
             $candidateStdin = "=== DIFF ===`n" + $cappedDiff
         }
@@ -588,7 +619,7 @@ try {
         # que son informativas: una invocacion mas limpia, no una rota.
         # XDG_CONFIG_HOME quedo FUERA a proposito: se probo en vivo y en
         # Windows la CLI no la honra (no crea nada en la ruta indicada).
-        if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_', 'CLAUDE_CONFIG_DIR') }
+        if ($candidate -eq 'claude' -or $candidate -eq 'glm') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_', 'CLAUDE_CONFIG_DIR') }
 
         if ($DryRun) {
             Write-Host ''
