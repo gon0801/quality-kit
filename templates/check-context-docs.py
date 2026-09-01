@@ -25,6 +25,7 @@ Exit 0 siempre (con --strict, exit 1 si encontro algo).
 Uso: python tools/check_context_docs.py [raiz] [--sweep] [--strict]
 """
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,11 +87,16 @@ def check_budgets(root: Path) -> list:
 
 
 def sweep(root: Path) -> list:
+    # Ruta absoluta de git (S607) y solo los errores que git puede dar (BLE001):
+    # sin git no hay sweep, y se dice, no se disfraza de "limpio".
+    git = shutil.which('git')
+    if git is None:
+        return ['(sweep no disponible: no se encontro git en PATH)']
     try:
         out = subprocess.run(
-            ['git', 'ls-files', '--others', '--exclude-standard'],
+            [git, 'ls-files', '--others', '--exclude-standard'],
             cwd=root, capture_output=True, text=True, check=True).stdout
-    except Exception as e:
+    except (OSError, subprocess.CalledProcessError) as e:
         return [f"(sweep no disponible: git fallo: {e})"]
     findings = []
     for line in out.splitlines():
@@ -112,6 +118,11 @@ def main(argv) -> int:
     args = [a for a in argv if not a.startswith('--')]
     flags = {a for a in argv if a.startswith('--')}
     root = Path(args[0]) if args else Path('.')
+    # Una raiz inexistente o que es un archivo no tiene docs que medir: sin
+    # esto el candado decia "dentro de presupuesto" sobre nada (falso verde).
+    if not root.is_dir():
+        print(f"[repo-hygiene] raiz invalida (no es un directorio): {root}")
+        return 1
 
     if '--sweep' in flags:
         findings = sweep(root)
