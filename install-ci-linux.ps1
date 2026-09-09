@@ -81,6 +81,18 @@ if (-not (Test-Path -LiteralPath $entryLocal -PathType Leaf)) {
     Write-Host '    Si la suite bash vive en otra ruta, pasala con -TestEntry <ruta/relativa.sh>.'
     exit 1
 }
+
+# Si el workflow ya esta shardeado y esta corrida NO paso -Shards, conservar
+# N: un refresh sin el flag no debe colapsar la matrix a un job en silencio.
+$workflowDir = Join-Path $RepoPath '.github\workflows'
+$workflowPath = Join-Path $workflowDir 'suite-linux.yml'
+$existing = Read-TextFile -Path $workflowPath
+if (-not $PSBoundParameters.ContainsKey('Shards') -and $null -ne $existing -and $existing -match [regex]::Escape($WorkflowMarker)) {
+    if ($existing -match "shard: \['1/(\d+)'") {
+        $Shards = [int]$Matches[1]
+        Write-Host "==> Conservo -Shards $Shards del workflow existente (pasa -Shards N para cambiarlo)."
+    }
+}
 if ($Shards -gt 1) {
     $entryText = Read-TextFile -Path $entryLocal
     if ($null -eq $entryText -or $entryText -notmatch 'SAIKIT_SHARD') {
@@ -146,9 +158,6 @@ if ($Shards -gt 1) {
 }
 
 # --- 3. Tres estados sobre el destino ---------------------------------------
-$workflowDir = Join-Path $RepoPath '.github\workflows'
-$workflowPath = Join-Path $workflowDir 'suite-linux.yml'
-$existing = Read-TextFile -Path $workflowPath
 if ($null -ne $existing -and $existing -notmatch [regex]::Escape($WorkflowMarker)) {
     Write-Host "==> Ya existe .github\workflows\suite-linux.yml y NO fue generado por quality-kit -- no lo toco."
     exit 1

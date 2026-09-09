@@ -728,18 +728,12 @@ function Test-HasRealNpmTestScript {
 
 function Test-HasJestOrVitest {
     param($PackageJson)
-    if ($null -eq $PackageJson) { return $false }
-    foreach ($section in @('dependencies', 'devDependencies', 'peerDependencies')) {
-        if (-not ($PackageJson.PSObject.Properties.Name -contains $section)) { continue }
-        $deps = $PackageJson.$section
-        if ($null -eq $deps) { continue }
-        $names = @($deps.PSObject.Properties.Name)
-        if ($names -contains 'jest' -or $names -contains 'vitest' -or $names -contains '@jest/globals') { return $true }
-    }
-    if (Test-HasRealNpmTestScript -PackageJson $PackageJson) {
-        $testCmd = [string]$PackageJson.scripts.test
-        if ($testCmd -match '(^|[\s/])(jest|vitest)(\s|$)') { return $true }
-    }
+    # Solo el script `test` importa: `--shard` se le pasa a `npm test`. Un
+    # jest/vitest en devDependencies con `scripts.test = node --test` no se
+    # shardea (el runner no entiende --shard).
+    if (-not (Test-HasRealNpmTestScript -PackageJson $PackageJson)) { return $false }
+    $testCmd = [string]$PackageJson.scripts.test
+    if ($testCmd -match '(^|[\s/])(jest|vitest)(\s|$)') { return $true }
     return $false
 }
 

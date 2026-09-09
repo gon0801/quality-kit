@@ -2495,6 +2495,16 @@ Assert-True ($rCiShardsNo.ExitCode -ne 0) 'install-ci-linux.ps1 -Shards 4 refuse
 Assert-True ($rCiShardsNo.Stdout -match 'SAIKIT_SHARD') 'the refusal names SAIKIT_SHARD as the reason (no silent workflow that fails on every push)' "stdout=$($rCiShardsNo.Stdout)"
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $ciShardNo '.github\workflows\suite-linux.yml'))) 'nothing was written into the refused -Shards repo'
 
+$ciShardKeep = New-FakeGitRepo -Name 'fake-ci-linux-shards-keep'
+New-Item -ItemType Directory -Path (Join-Path $ciShardKeep 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciShardKeep 'tests\run.sh') -Content "#!/bin/bash`n# Honra SAIKIT_SHARD=i/N`nexit 0`n"
+$rCiShardKeep1 = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciShardKeep, '-Shards', '4')
+Assert-True ($rCiShardKeep1.ExitCode -eq 0) 'setup: first -Shards 4 install exits 0' "exit=$($rCiShardKeep1.ExitCode)"
+$rCiShardKeep2 = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciShardKeep)
+Assert-True ($rCiShardKeep2.ExitCode -eq 0) 'a re-run WITHOUT -Shards on an already-sharded workflow exits 0' "exit=$($rCiShardKeep2.ExitCode) stdout=$($rCiShardKeep2.Stdout)"
+$ciShardKeepYaml = Read-TextFile -Path (Join-Path $ciShardKeep '.github\workflows\suite-linux.yml')
+Assert-True ($ciShardKeepYaml -match [regex]::Escape("shard: ['1/4', '2/4', '3/4', '4/4']")) 're-running without -Shards preserves the existing 4-shard matrix (does not silently collapse to one job)'
+
 Write-Host ''
 Write-Host '=== TEST GROUP 10: quality.yml paralelo (pytest -n auto, opt-out, jest shard, gate) ==='
 function Add-FakeGithubRemote {
@@ -2519,6 +2529,9 @@ Assert-True ($ciPyParYaml -match 'if: always\(\)') 'the quality.yml gate job has
 Assert-True ($ciPyParYaml -match 'tools/check-\*\.sh') 'the gate job looks for tools/check-*.sh on real docs'
 Assert-True ($ciPyParYaml -match 'tools/check_\*\.py') 'the gate job looks for tools/check_*.py on real docs'
 Assert-True ($ciPyParYaml -match 'sale 0') 'if no checkers exist the gate job declares it and exits 0'
+Assert-True ($ciPyParYaml -match '\*docs\*|\*ledger\*|\*context\*') 'the gate job only runs docs/ledger checkers, not every tools/check-*.sh (check-secrets.sh without args is exit 2)'
+Assert-True ($ciPyParYaml -match 'python3 ') 'the gate job invokes python3, which exists on ubuntu-latest without extra setup'
+Assert-True ($ciPyParYaml -notmatch '(?m)^\s+python "') 'the gate job does not call bare python (often missing on ubuntu-latest)'
 Assert-True ($ciPyParYaml -notmatch 'paths-ignore|paths:') 'the battery is NOT skipped by change type (no path filters)'
 Assert-True ($ciPyParYaml -notmatch '__PYTEST_CMD__|__NODE_IN_QUALITY_JOB__|__NODE_SHARD_JOB__|__GATE_NEEDS__|__GATE_RESULTS_ENV__|__GATE_RESULTS_FOR__') 'no quality.yml placeholder survives'
 Assert-True ($rCiPyPar.Stdout -match 'CI ya corre la bateria completa') 'pytest -n auto still counts as CI running the full battery (pre-push stays smoke)' "stdout=$($rCiPyPar.Stdout)"
@@ -2572,6 +2585,16 @@ Assert-True ($ciNoJestYaml -notmatch '--shard=') 'without jest/vitest there is n
 Assert-True ($ciNoJestYaml -notmatch '(?m)^  quality-node:') 'without jest/vitest there is no extra quality-node job'
 Assert-True ($ciNoJestYaml -match '(?m)^  gate:') 'the single-job node workflow still has a gate job'
 Assert-True ($ciNoJestYaml -match 'if: always\(\)') 'the single-job node gate has if: always()'
+
+$ciJestDepsOnly = New-FakeGitRepo -Name 'fake-ci-jest-deps-only'
+$jestDepsOnlyPkg = '{"name":"fake-ci-jest-deps-only","version":"1.0.0","scripts":{"test":"node --test"},"devDependencies":{"jest":"^29.0.0"}}'
+Write-Utf8NoBomFile -Path (Join-Path $ciJestDepsOnly 'package.json') -Content $jestDepsOnlyPkg
+Add-FakeGithubRemote -RepoPath $ciJestDepsOnly -Slug 'fake-ci-jest-deps-only'
+$rJestDepsOnly = Invoke-InitRepo -RepoPath $ciJestDepsOnly
+Assert-True ($rJestDepsOnly.ExitCode -eq 0) 'init-repo.ps1 exits 0 when jest is only a dependency and test is node --test' "exit=$($rJestDepsOnly.ExitCode)"
+$ciJestDepsOnlyYaml = Read-TextFile -Path (Join-Path $ciJestDepsOnly '.github\workflows\quality.yml')
+Assert-True ($ciJestDepsOnlyYaml -notmatch '--shard=') 'jest in devDependencies with scripts.test=node --test does NOT get a --shard matrix'
+Assert-True ($ciJestDepsOnlyYaml -match 'npm test --if-present') 'deps-only jest keeps a single npm test job'
 
 $ciNAutoDetect = New-FakeGitRepo -Name 'fake-ci-n-auto-detect'
 Write-Utf8NoBomFile -Path (Join-Path $ciNAutoDetect 'pyproject.toml') -Content "[project]`nname = ""fake-ci-n-auto-detect""`nversion = ""0.1.0""`n"

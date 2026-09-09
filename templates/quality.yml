@@ -65,17 +65,19 @@ __NODE_SHARD_JOB__
           set -e
           found=0
           if [ -d tools ]; then
-            for f in tools/check-*.sh; do
+            for f in tools/check-*.sh tools/check_*.py; do
               [ -e "$f" ] || continue
+              base=$(basename "$f")
+              case "$base" in
+                *docs*|*ledger*|*deploy-log*|*context*) ;;
+                *) echo "gate: salto $f (no es checker de docs/ledger)"; continue ;;
+              esac
               found=1
               echo "gate: corriendo $f"
-              bash "$f"
-            done
-            for f in tools/check_*.py; do
-              [ -e "$f" ] || continue
-              found=1
-              echo "gate: corriendo $f"
-              python "$f"
+              case "$f" in
+                *.sh) bash "$f" ;;
+                *) python3 "$f" ;;
+              esac
             done
           fi
           if [ "$found" -eq 0 ]; then
