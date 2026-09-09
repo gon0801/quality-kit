@@ -298,7 +298,8 @@ Assert-True ($hygieneInstaller -match '(?ms)id:\s*context-docs-budget.*?language
 Write-Host ''
 Write-Host '=== TEST GROUP 1b: idempotency -- running init-repo.ps1 again changes nothing extra ==='
 $pyWorkflowPath = Join-Path $pyRepo '.github\workflows\quality.yml'
-$customWorkflow = (Read-TextFile -Path $pyWorkflowPath) + "`n# ajuste propio que init-repo debe preservar`n"
+New-Item -ItemType Directory -Path (Split-Path -Parent $pyWorkflowPath) -Force | Out-Null
+$customWorkflow = (Read-TextFile -Path (Join-Path $TemplatesDir 'quality.yml')) + "`n# ajuste propio que init-repo debe preservar`n"
 Write-Utf8NoBomFile -Path $pyWorkflowPath -Content $customWorkflow
 $r1b = Invoke-InitRepo -RepoPath $pyRepo
 Assert-True ($r1b.ExitCode -eq 0) 'second init-repo.ps1 run also exits 0' "exit=$($r1b.ExitCode)"
