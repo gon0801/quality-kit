@@ -11,7 +11,7 @@
 #   3. `python -m pre_commit install` para activar los hooks de git.
 #   4. Corre el candado y el sweep una vez y reporta (no borra nada).
 #
-# Uso:  powershell -ExecutionPolicy Bypass -File install-repo-hygiene.ps1 [-RepoPath <ruta>]
+# Uso:  pwsh -NoProfile -File ./install-repo-hygiene.ps1 [-RepoPath <ruta>]
 #
 # PowerShell 5.1 compatible (mismas convenciones que init-repo.ps1).
 
@@ -82,7 +82,7 @@ if (-not (Test-Path $ConfigPath)) {
     $minimal = @"
 # .pre-commit-config.yaml minimo creado por install-repo-hygiene.ps1.
 # Para el kit completo (lint, tests, higiene de archivos) corre despues:
-#   powershell -ExecutionPolicy Bypass -File $KitDir\init-repo.ps1
+#   pwsh -NoProfile -File "$KitDir/init-repo.ps1"
 repos:
 $HookBlock
 "@

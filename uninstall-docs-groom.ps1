@@ -4,19 +4,32 @@
 # created, for all three AI CLIs. Run it yourself, same as
 # install-docs-groom.ps1:
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\uninstall-docs-groom.ps1
+#   pwsh -NoProfile -File ./uninstall-docs-groom.ps1
 #
 # Safe to run even if a skill was never installed for a given AI (it just
 # skips it). Takes a timestamped backup of the removed SKILL.md before
 # deleting it.
 
 param(
-    [string]$ClaudeSkillsDir = (Join-Path $env:USERPROFILE '.claude\skills'),
-    [string]$CodexSkillsDir = (Join-Path $env:USERPROFILE '.codex\skills'),
-    [string]$KimiSkillsDir = (Join-Path $env:USERPROFILE '.kimi-code\skills')
+    [string]$ClaudeSkillsDir = '',
+    [string]$CodexSkillsDir = '',
+    [string]$KimiSkillsDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Get-QualityKitUserHome {
+    if ($env:QUALITY_KIT_USER_HOME) { return $env:QUALITY_KIT_USER_HOME }
+    $homePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ($homePath) { return $homePath }
+    if ($env:HOME) { return $env:HOME }
+    throw 'No se pudo resolver el directorio personal del usuario.'
+}
+
+$UserHome = Get-QualityKitUserHome
+if (-not $ClaudeSkillsDir) { $ClaudeSkillsDir = Join-Path $UserHome '.claude/skills' }
+if (-not $CodexSkillsDir) { $CodexSkillsDir = Join-Path $UserHome '.codex/skills' }
+if (-not $KimiSkillsDir) { $KimiSkillsDir = Join-Path $UserHome '.kimi-code/skills' }
 
 function New-TimestampedBackup {
     param([string]$Path)

@@ -19,7 +19,7 @@
 # install-ci-linux.ps1). Sin esa red, dejalo en `ask`.
 #
 # Uso:
-#   powershell -ExecutionPolicy Bypass -File install-branch-push-policy.ps1 `
+#   pwsh -NoProfile -File ./install-branch-push-policy.ps1 `
 #       -RepoPath <repo> [-Mode allow|ask]
 #
 # PowerShell 5.1 compatible (mismas convenciones que init-repo.ps1).

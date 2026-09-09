@@ -25,6 +25,20 @@ $DocsGroomDir = Join-Path $QualityKitDir 'docs-groom'
 $TestFixturesDir = Join-Path $QualityKitDir 'tests\temp-fixtures'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
+function Get-CurrentPowerShellExe {
+    $current = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    if ($current -and ((Split-Path -Leaf $current) -match '^(pwsh|powershell)(\.exe)?$')) { return $current }
+    foreach ($name in @('pwsh', 'powershell')) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($null -ne $command) { return $command.Source }
+    }
+    throw 'No se encontro el ejecutable de PowerShell actual.'
+}
+
+$PowerShellExe = Get-CurrentPowerShellExe
+$UserHome = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+$PathEnvKey = if ($env:OS -eq 'Windows_NT') { 'Path' } else { 'PATH' }
+
 $script:PassCount = 0
 $script:FailCount = 0
 
@@ -91,7 +105,7 @@ function New-FakeGitRepo {
 function Invoke-ScriptCapture {
     param([string]$ScriptPath, [string[]]$ScriptArgs = @())
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell'
+    $psi.FileName = $PowerShellExe
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $ScriptArgs
     # Build the argument string manually (PS 5.1's ProcessStartInfo has no
     # ArgumentList property -- confirmed unavailable on this machine), with
@@ -131,7 +145,7 @@ function Invoke-ScriptCapture {
 function Invoke-ScriptCaptureWithoutBashOnPath {
     param([string]$ScriptPath, [string[]]$ScriptArgs = @())
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell'
+    $psi.FileName = $PowerShellExe
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $ScriptArgs
     $quotedParts = @()
     foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
@@ -140,11 +154,11 @@ function Invoke-ScriptCaptureWithoutBashOnPath {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
-    $currentPath = $psi.EnvironmentVariables['Path']
-    $filteredParts = @($currentPath -split ';' | Where-Object {
+    $currentPath = $psi.EnvironmentVariables[$PathEnvKey]
+    $filteredParts = @($currentPath -split [System.IO.Path]::PathSeparator | Where-Object {
         ($_ -notlike '*usr\bin*') -and ($_ -notlike '*mingw64\bin*') -and ($_ -notlike '*usr\local\bin*')
     })
-    $psi.EnvironmentVariables['Path'] = ($filteredParts -join ';')
+    $psi.EnvironmentVariables[$PathEnvKey] = ($filteredParts -join [System.IO.Path]::PathSeparator)
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
@@ -203,7 +217,7 @@ function Invoke-CrossReviewAutoWithoutAiClisOnPath {
     }
     $aiDirs = @($aiDirs | Sort-Object -Unique)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell'
+    $psi.FileName = $PowerShellExe
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $CrossReviewScript, '-Con', 'auto', '-RepoPath', $RepoPath)
     $quotedParts = @()
     foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
@@ -212,11 +226,11 @@ function Invoke-CrossReviewAutoWithoutAiClisOnPath {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
-    $currentPath = $psi.EnvironmentVariables['Path']
-    $filteredParts = @($currentPath -split ';' | Where-Object {
+    $currentPath = $psi.EnvironmentVariables[$PathEnvKey]
+    $filteredParts = @($currentPath -split [System.IO.Path]::PathSeparator | Where-Object {
         $aiDirs -notcontains $_.TrimEnd('\')
     })
-    $psi.EnvironmentVariables['Path'] = ($filteredParts -join ';')
+    $psi.EnvironmentVariables[$PathEnvKey] = ($filteredParts -join [System.IO.Path]::PathSeparator)
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
@@ -899,7 +913,7 @@ Write-Host '=== TEST GROUP 3j (audit 2026-08-03): env-var redirections are actua
 function Invoke-CrossReviewWithFakeClaude {
     param([string]$RepoPath, [string]$FakeCliDir)
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell'
+    $psi.FileName = $PowerShellExe
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $CrossReviewScript, '-Con', 'claude', '-RepoPath', $RepoPath)
     $quotedParts = @()
     foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
@@ -909,7 +923,7 @@ function Invoke-CrossReviewWithFakeClaude {
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     # La CLI falsa va PRIMERO en el PATH para ganarle a la real.
-    $psi.EnvironmentVariables['Path'] = $FakeCliDir + ';' + $psi.EnvironmentVariables['Path']
+    $psi.EnvironmentVariables[$PathEnvKey] = $FakeCliDir + [System.IO.Path]::PathSeparator + $psi.EnvironmentVariables[$PathEnvKey]
     # Redirecciones de mentira que el script DEBE limpiar...
     $psi.EnvironmentVariables['CLAUDE_CONFIG_DIR'] = 'C:\fake\redirected-config'
     $psi.EnvironmentVariables['ANTHROPIC_BASE_URL'] = 'https://fake.example/redirect'
@@ -935,9 +949,22 @@ function Invoke-CrossReviewWithFakeClaude {
 
 $fakeCliDir = Join-Path $TestFixturesDir 'fake-cli-bin'
 New-Item -ItemType Directory -Path $fakeCliDir -Force | Out-Null
-# CRLF a proposito: cmd.exe puede tropezar con un .cmd de solo LF.
-$fakeClaudeCmd = "@echo off`r`nif defined CLAUDE_CONFIG_DIR (echo CFG=SET) else (echo CFG=UNSET)`r`nif defined ANTHROPIC_BASE_URL (echo BASE=SET) else (echo BASE=UNSET)`r`nif defined CLAUDE_CODE_OAUTH_TOKEN (echo OAUTH=SET) else (echo OAUTH=UNSET)`r`nif defined HTTPS_PROXY (echo PROXY=SET) else (echo PROXY=UNSET)`r`n"
-Write-Utf8NoBomFile -Path (Join-Path $fakeCliDir 'claude.cmd') -Content $fakeClaudeCmd
+if ($env:OS -eq 'Windows_NT') {
+    # CRLF a proposito: cmd.exe puede tropezar con un .cmd de solo LF.
+    $fakeClaudePath = Join-Path $fakeCliDir 'claude.cmd'
+    $fakeClaude = "@echo off`r`nif defined CLAUDE_CONFIG_DIR (echo CFG=SET) else (echo CFG=UNSET)`r`nif defined ANTHROPIC_BASE_URL (echo BASE=SET) else (echo BASE=UNSET)`r`nif defined CLAUDE_CODE_OAUTH_TOKEN (echo OAUTH=SET) else (echo OAUTH=UNSET)`r`nif defined HTTPS_PROXY (echo PROXY=SET) else (echo PROXY=UNSET)`r`n"
+} else {
+    $fakeClaudePath = Join-Path $fakeCliDir 'claude'
+    $fakeClaude = @'
+#!/bin/sh
+[ -n "$CLAUDE_CONFIG_DIR" ] && echo CFG=SET || echo CFG=UNSET
+[ -n "$ANTHROPIC_BASE_URL" ] && echo BASE=SET || echo BASE=UNSET
+[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo OAUTH=SET || echo OAUTH=UNSET
+[ -n "$HTTPS_PROXY" ] && echo PROXY=SET || echo PROXY=UNSET
+'@
+}
+Write-Utf8NoBomFile -Path $fakeClaudePath -Content $fakeClaude
+if ($env:OS -ne 'Windows_NT') { & chmod +x $fakeClaudePath }
 # Un cambio sin commitear garantiza un diff real que revisar.
 Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`ndef div(a, b):`n    return a / b  # marker_env_test`n"
 $rEnv = Invoke-CrossReviewWithFakeClaude -RepoPath $pyRepo -FakeCliDir $fakeCliDir
@@ -958,7 +985,7 @@ $SaikitGateHealScript = Join-Path $QualityKitDir 'saikit-gate-heal.ps1'
 function Invoke-SaikitGateHeal {
     param([string]$FakeHome, [string[]]$ExtraArgs = @())
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'powershell'
+    $psi.FileName = $PowerShellExe
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $SaikitGateHealScript) + $ExtraArgs
     $quotedParts = @()
     foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
@@ -969,7 +996,7 @@ function Invoke-SaikitGateHeal {
     $psi.UseShellExecute = $false
     # Home falso: el script real toca ~/.codex, ~/.cursor y ~/.agents (.claude
     # dejo de ser target en la Task 4.1: lo instala entero summonaikit-claude).
-    $psi.EnvironmentVariables['USERPROFILE'] = $FakeHome
+    $psi.EnvironmentVariables['QUALITY_KIT_USER_HOME'] = $FakeHome
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $proc.Start() | Out-Null
@@ -1050,7 +1077,7 @@ Write-Host '=== TEST GROUP 3l: the two patches stay independent -- broken anchor
 # fixture instead of the real installed hooks, same as TEST GROUP 3m below --
 # this group already does: both fixtures here are synthetic, embedded
 # here-strings, exactly like every other test in this file, with no
-# dependency on $env:USERPROFILE or on any kit variant being installed on the
+# dependency on the real user home or on any kit variant being installed on the
 # machine running the suite. Nothing to change here; the fix for THIS group's
 # instance of the problem was already the norm the rest of the file follows.
 
@@ -1183,10 +1210,11 @@ $script:RnStopExitCodes = @()
 function Get-BashExeForTests {
     $viaPath = Get-Command bash -ErrorAction SilentlyContinue
     if ($null -ne $viaPath) { return $viaPath.Source }
-    $fixedCandidates = @(
-        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
-        (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
-    )
+    $fixedCandidates = @()
+    if ($env:ProgramFiles) {
+        $fixedCandidates += (Join-Path $env:ProgramFiles 'Git\bin\bash.exe')
+        $fixedCandidates += (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+    }
     foreach ($c in $fixedCandidates) {
         if (Test-Path -LiteralPath $c) { return $c }
     }
@@ -1199,8 +1227,8 @@ $RnBashExe = Get-BashExeForTests
 # asi que ya no es un sujeto valido para verificar que el heal PARCHEA un hook
 # vendor real. .cursor/.agents comparten la shape y son vendor (sin marcador, sin
 # los fixes 3.x), exactamente lo que el fixture congelado representa.
-$LiveClaudeHookForRnTests = Join-Path $env:USERPROFILE '.cursor\hooks\summonaikit-harness.sh'
-$LiveCodexHookForRnTests = Join-Path $env:USERPROFILE '.codex\hooks\summonaikit-harness.sh'
+$LiveClaudeHookForRnTests = Join-Path $UserHome '.cursor/hooks/summonaikit-harness.sh'
+$LiveCodexHookForRnTests = Join-Path $UserHome '.codex/hooks/summonaikit-harness.sh'
 
 if ($null -eq $RnBashExe) {
     # This is a genuine missing TOOL prerequisite (same tier as git, which the

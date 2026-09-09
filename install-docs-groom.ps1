@@ -6,7 +6,7 @@
 # exactly the kind of AI configuration an assistant's own permission system
 # should not be touching on its own behalf.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-docs-groom.ps1
+#   pwsh -NoProfile -File ./install-docs-groom.ps1
 #
 # Idempotent: running it again regenerates the same SKILL.md content (taking
 # a fresh timestamped backup of whatever was there first). The canonical
@@ -23,15 +23,28 @@
 # them and it targets your real ~/.claude, ~/.codex, ~/.kimi-code.
 
 param(
-    [string]$ClaudeSkillsDir = (Join-Path $env:USERPROFILE '.claude\skills'),
-    [string]$CodexSkillsDir = (Join-Path $env:USERPROFILE '.codex\skills'),
-    [string]$KimiSkillsDir = (Join-Path $env:USERPROFILE '.kimi-code\skills')
+    [string]$ClaudeSkillsDir = '',
+    [string]$CodexSkillsDir = '',
+    [string]$KimiSkillsDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $QualityKitDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DocsGroomDir = Join-Path $QualityKitDir 'docs-groom'
+
+function Get-QualityKitUserHome {
+    if ($env:QUALITY_KIT_USER_HOME) { return $env:QUALITY_KIT_USER_HOME }
+    $homePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ($homePath) { return $homePath }
+    if ($env:HOME) { return $env:HOME }
+    throw 'No se pudo resolver el directorio personal del usuario.'
+}
+
+$UserHome = Get-QualityKitUserHome
+if (-not $ClaudeSkillsDir) { $ClaudeSkillsDir = Join-Path $UserHome '.claude/skills' }
+if (-not $CodexSkillsDir) { $CodexSkillsDir = Join-Path $UserHome '.codex/skills' }
+if (-not $KimiSkillsDir) { $KimiSkillsDir = Join-Path $UserHome '.kimi-code/skills' }
 
 function Write-Utf8NoBomFile {
     param([string]$Path, [string]$Content)

@@ -4,15 +4,15 @@
 # working to look over a diff with fresh eyes, independent of whoever wrote
 # it. Run from inside the repo you want reviewed:
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con kimi
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con codex -Alcance staged
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con grok
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con qwen
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con kimi
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Alcance staged
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con claude -Alcance last-commit
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con grok
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con qwen
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi
 #
 # -Con auto: try the strongest available reviewer first and fall back down
-# the chain (claude -> grok -> kimi -> qwen -> codex), skipping -Excluir
+# the chain (claude -> glm -> grok -> kimi -> qwen -> codex), skipping -Excluir
 # (the AI that wrote the change). claude is always invoked with ANTHROPIC_*,
 # CLAUDE_CODE_* and
 # CLAUDE_CONFIG_DIR env vars stripped, so env-var redirections (a
@@ -340,8 +340,8 @@ function Get-CliInvocation {
         # (verificado: con --safe-mode -y el archivo SI se creo). La
         # defensa contra el incidente de "cargo su skill y no miro el
         # diff" queda en el prompt, que ya ordena no usar skills.
-        # -o text = stdout plano, no JSON. qwen aqui es un .cmd:
-        # Resolve-CliExePath + el wrap de cmd.exe /c de abajo lo cubren.
+        # -o text = stdout plano, no JSON. En Windows puede resolver a .cmd;
+        # en Unix resuelve al launcher nativo. Get-CliInvocation cubre ambos.
         $cliArgsText = "-p $escapedPrompt -y -o text"
         $resolved = Resolve-CliExePath -Name 'qwen'
     } else {
@@ -431,7 +431,11 @@ function Invoke-CliHeadless {
             # .cmd (cmd.exe -> node, el caso codex) quedaria huerfano y
             # consumiendo cuota si solo se matara el proceso directo
             # (Process.Kill() de PS 5.1 no tiene la variante de arbol).
-            try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
+            if ($env:OS -eq 'Windows_NT') {
+                try { & taskkill /T /F /PID $proc.Id 2>$null | Out-Null } catch { }
+            } else {
+                try { $proc.Kill($true) } catch { }
+            }
             try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
             # WaitAll lanza AggregateException si una task quedo Faulted (y
             # .Result tambien) -- capturar solo lo que SI termino bien, para

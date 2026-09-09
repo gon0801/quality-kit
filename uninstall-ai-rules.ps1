@@ -5,7 +5,7 @@
 # everything else in each file exactly as it was. Run it yourself, same as
 # install-ai-rules.ps1:
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\uninstall-ai-rules.ps1
+#   pwsh -NoProfile -File ./uninstall-ai-rules.ps1
 #
 # Safe to run even if a file was never touched by install-ai-rules.ps1 (it
 # just skips it). Takes a timestamped backup before changing any file. If
@@ -14,13 +14,26 @@
 # guess what to remove.
 
 param(
-    [string]$ClaudeMdPath = (Join-Path $env:USERPROFILE '.claude\CLAUDE.md'),
-    [string]$CodexAgentsPath = (Join-Path $env:USERPROFILE '.codex\AGENTS.md'),
-    [string]$KimiAgentsPath = (Join-Path $env:USERPROFILE '.kimi-code\AGENTS.md')
+    [string]$ClaudeMdPath = '',
+    [string]$CodexAgentsPath = '',
+    [string]$KimiAgentsPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function Get-QualityKitUserHome {
+    if ($env:QUALITY_KIT_USER_HOME) { return $env:QUALITY_KIT_USER_HOME }
+    $homePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ($homePath) { return $homePath }
+    if ($env:HOME) { return $env:HOME }
+    throw 'No se pudo resolver el directorio personal del usuario.'
+}
+
+$UserHome = Get-QualityKitUserHome
+if (-not $ClaudeMdPath) { $ClaudeMdPath = Join-Path $UserHome '.claude/CLAUDE.md' }
+if (-not $CodexAgentsPath) { $CodexAgentsPath = Join-Path $UserHome '.codex/AGENTS.md' }
+if (-not $KimiAgentsPath) { $KimiAgentsPath = Join-Path $UserHome '.kimi-code/AGENTS.md' }
 
 $StartMarker = '<!-- >>> QUALITY-KIT REGLAS DE CALIDAD START -- managed by quality-kit''s install-ai-rules.ps1 / uninstall-ai-rules.ps1. Do not hand-edit between these markers. -->'
 $EndMarker = '<!-- >>> QUALITY-KIT REGLAS DE CALIDAD END -->'
