@@ -298,8 +298,8 @@ con estas reglas:
 2. Cada bug arreglado incluye, en el mismo cambio, una prueba de
    regresion.
 3. Durante la implementacion se corren pruebas focalizadas; se ejecuta la
-   bateria completa una sola vez por bloque sobre el commit final. La evidencia
-   de CI para el mismo SHA no se repite localmente.
+   bateria completa una sola vez por bloque sobre el commit final. Si commit,
+   push o CI ya validaron el mismo SHA, esos checks no se repiten manualmente.
 4. Los hallazgos de revision se agrupan en una sola ronda por bloque. Para
    cambios delicados, sugerir revision cruzada
    (`cross-review.ps1`).

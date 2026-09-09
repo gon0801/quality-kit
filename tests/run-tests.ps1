@@ -288,7 +288,7 @@ Assert-True ($null -ne $pyClaudeMd -and $pyClaudeMd -match 'QUALITY-KIT CALIDAD 
 Assert-True ($null -ne $pyAgentsMd -and $pyAgentsMd -match 'QUALITY-KIT CALIDAD SECTION START') 'AGENTS.md was created with the Calidad section'
 Assert-True ($pyClaudeMd -match 'JAMAS') 'the Calidad section states the never-bypass-hooks rule'
 Assert-True ($pyClaudeMd -match 'pytest -x -q') 'the Calidad section documents the exact pytest pre-push command'
-Assert-True ($pyClaudeMd -match 'No vuelvas a ejecutar CI si el commit verificado no cambio') 'the managed Calidad section prevents repeated CI on the same SHA'
+Assert-True ($pyClaudeMd -match 'commit, push o CI ya validaron') 'the managed Calidad section reuses checks already run by hooks or CI on the same SHA'
 Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
 Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
 
@@ -1991,7 +1991,7 @@ Assert-True ($claudeMdAfterInstall -match 'JAMAS') 'the section states the never
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review.ps1')) 'the section mentions cross-review.ps1 for delicate changes'
 Assert-True ($claudeMdAfterInstall -match 'pruebas focalizadas') 'the global section limits iteration to focused tests'
 Assert-True ($claudeMdAfterInstall -match 'bateria completa una sola vez') 'the global section limits the full battery to one final run'
-Assert-True ($claudeMdAfterInstall -match 'no los repitas') 'the global section reuses CI evidence for an unchanged SHA'
+Assert-True ($claudeMdAfterInstall -match 'commit, push o CI ya validaron') 'the global section reuses hook and CI evidence for an unchanged SHA'
 Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the global section consolidates review findings into one round'
 Assert-True ($claudeMdAfterInstall -match 'observacion tardia menor') 'the global section prevents minor late findings from reopening the cycle'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('init-repo.ps1')) 'the section mentions init-repo.ps1 for repos without a quality kit yet'

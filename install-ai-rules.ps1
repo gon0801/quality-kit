@@ -55,7 +55,7 @@ $SectionBody = @'
 
 1. Si el repo tiene candados de commit (pre-commit), correlos antes de dar por terminado -- JAMAS uses --no-verify ni los saltees; si algo falla, se arregla, no se esquiva.
 2. Cada bug que arreglas incluye, en el mismo cambio, una prueba que lo habria atrapado.
-3. Durante la implementacion corre pruebas focalizadas; ejecuta la bateria completa una sola vez por bloque sobre el commit final, preferentemente en CI. Si CI ya valido el mismo SHA, no los repitas localmente.
+3. Durante la implementacion corre pruebas focalizadas; ejecuta la bateria completa una sola vez por bloque sobre el commit final, preferentemente en CI. Si commit, push o CI ya validaron el mismo SHA, no repitas esos checks manualmente.
 4. Agrupa los hallazgos de revision y corrigelos en una sola ronda por bloque. Para cambios delicados, sugiere una revision cruzada con otra IA: __CROSS_REVIEW__
    TOPE DURO: maximo 1 ronda; una segunda SOLO si la primera hallo severidad alta; JAMAS una tercera (los hallazgos residuales se declaran en el spec/PR, no se re-revisan). Cada ronda cuesta ~100-150k tokens.
 5. Una observacion tardia menor queda pendiente; solo seguridad, datos o el comportamiento solicitado reabren el ciclo. Despues del deploy ejecuta el checklist una sola vez y reutiliza evidencia valida mientras el SHA no cambie.

@@ -952,7 +952,7 @@ function Get-CalidadSectionBody {
     $lines.Add('- Agrupa los hallazgos de revision y corrigelos en una sola ronda por bloque.')
     $lines.Add('- Ejecuta Ruff y las pruebas focalizadas despues del ultimo cambio del bloque.')
     $lines.Add('- Ejecuta la bateria completa una sola vez por bloque, sobre el commit final y preferentemente en CI mediante PR.')
-    $lines.Add('- Si CI ya valido tests, Ruff y pre-commit sobre ese SHA, no los repitas localmente.')
+    $lines.Add('- Si commit, push o CI ya validaron tests, Ruff o pre-commit sobre ese SHA, no los repitas manualmente.')
     $lines.Add('- No vuelvas a ejecutar CI si el commit verificado no cambio.')
     $lines.Add('- Una observacion tardia menor queda pendiente; solo seguridad, datos, reglas innegociables o el comportamiento solicitado reabren el ciclo.')
     $lines.Add('- Despues del deploy, ejecuta una sola vez el checklist del repo y no repitas evidencia valida sin un cambio que pueda invalidarla.')
