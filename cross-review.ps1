@@ -503,7 +503,7 @@ if ($Con -eq 'auto') {
     }
 } else {
     if ($Excluir -eq $Con) {
-        throw "-Excluir '$Excluir' es el mismo CLI que -Con '$Con': una IA no debe revisar su propio cambio."
+        throw "Una IA no debe revisar su propio cambio (-Con y -Excluir: '$Con')."
     }
     $chain = @($Con)
 }
