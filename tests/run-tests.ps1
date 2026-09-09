@@ -297,6 +297,8 @@ Assert-True ($hygieneInstaller -match '(?ms)id:\s*context-docs-budget.*?language
 
 Write-Host ''
 Write-Host '=== TEST GROUP 1b: idempotency -- running init-repo.ps1 again changes nothing extra ==='
+Push-Location -LiteralPath $pyRepo
+try { Invoke-GitSilent -GitArgs @('remote', 'add', 'origin', 'https://github.com/gon0801/fake-py-repo.git') } finally { Pop-Location }
 $pyWorkflowPath = Join-Path $pyRepo '.github\workflows\quality.yml'
 New-Item -ItemType Directory -Path (Split-Path -Parent $pyWorkflowPath) -Force | Out-Null
 $customWorkflow = (Read-TextFile -Path (Join-Path $QualityKitDir 'templates\quality.yml')) + "`n# ajuste propio que init-repo debe preservar`n"
