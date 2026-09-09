@@ -285,8 +285,7 @@ deberia poder tocar esos archivos por su cuenta.
 pwsh -NoProfile -File ./install-ai-rules.ps1
 ```
 
-Agrega una seccion corta "REGLAS DE CALIDAD (quality-kit)" (unas 8 lineas)
-a:
+Agrega una seccion corta "REGLAS DE CALIDAD (quality-kit)" a:
 
 - `~/.claude/CLAUDE.md`
 - `~/.codex/AGENTS.md` (lo crea si todavia no existe)
@@ -298,9 +297,15 @@ con estas reglas:
    terminado -- nunca usar `--no-verify` ni saltearlos.
 2. Cada bug arreglado incluye, en el mismo cambio, una prueba de
    regresion.
-3. Para cambios delicados, sugerir revision cruzada
+3. Durante la implementacion se corren pruebas focalizadas; se ejecuta la
+   bateria completa una sola vez por bloque sobre el commit final. La evidencia
+   de CI para el mismo SHA no se repite localmente.
+4. Los hallazgos de revision se agrupan en una sola ronda por bloque. Para
+   cambios delicados, sugerir revision cruzada
    (`cross-review.ps1`).
-4. Si el repo no tiene kit de calidad, sugerir `init-repo.ps1` una vez
+5. Una observacion tardia menor no reabre el ciclo; el checklist posterior al
+   deploy se ejecuta una sola vez mientras el SHA no cambie.
+6. Si el repo no tiene kit de calidad, sugerir `init-repo.ps1` una vez
    (sin insistir).
 
 Es idempotente (correrlo de nuevo no duplica nada) y deja una copia de

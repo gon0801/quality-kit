@@ -1984,9 +1984,14 @@ Assert-True ($claudeMdAfterInstall -match 'Some pre-existing content that must s
 Assert-True ($claudeMdAfterInstall -match 'REGLAS DE CALIDAD') 'install-ai-rules.ps1 adds the REGLAS DE CALIDAD section to CLAUDE.md'
 Assert-True ($claudeMdAfterInstall -match 'JAMAS') 'the section states the never-bypass-hooks rule'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review.ps1')) 'the section mentions cross-review.ps1 for delicate changes'
+Assert-True ($claudeMdAfterInstall -match 'pruebas focalizadas') 'the global section limits iteration to focused tests'
+Assert-True ($claudeMdAfterInstall -match 'bateria completa una sola vez') 'the global section limits the full battery to one final run'
+Assert-True ($claudeMdAfterInstall -match 'no los repitas') 'the global section reuses CI evidence for an unchanged SHA'
+Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the global section consolidates review findings into one round'
+Assert-True ($claudeMdAfterInstall -match 'observacion tardia menor') 'the global section prevents minor late findings from reopening the cycle'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('init-repo.ps1')) 'the section mentions init-repo.ps1 for repos without a quality kit yet'
 $claudeMdLineCount = @($claudeMdAfterInstall -split "`n" | Where-Object { $_ -match 'REGLAS DE CALIDAD|^\d\.|QUALITY-KIT REGLAS' }).Count
-Assert-True ($claudeMdLineCount -le 8) 'the REGLAS DE CALIDAD section stays compact (about 8 lines), matching the discipline of a global rules file' "counted content lines=$claudeMdLineCount"
+Assert-True ($claudeMdLineCount -le 12) 'the REGLAS DE CALIDAD section stays compact (about 12 lines), matching the discipline of a global rules file' "counted content lines=$claudeMdLineCount"
 
 Assert-True (Test-Path -LiteralPath $fakeCodexAgents) 'install-ai-rules.ps1 CREATED ~/.codex/AGENTS.md, which did not exist before'
 $codexAgentsAfterInstall = Read-TextFile -Path $fakeCodexAgents

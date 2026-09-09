@@ -55,10 +55,12 @@ $SectionBody = @'
 
 1. Si el repo tiene candados de commit (pre-commit), correlos antes de dar por terminado -- JAMAS uses --no-verify ni los saltees; si algo falla, se arregla, no se esquiva.
 2. Cada bug que arreglas incluye, en el mismo cambio, una prueba que lo habria atrapado.
-3. Para cambios delicados, sugiere una revision cruzada con otra IA: __CROSS_REVIEW__
+3. Durante la implementacion corre pruebas focalizadas; ejecuta la bateria completa una sola vez por bloque sobre el commit final, preferentemente en CI. Si CI ya valido el mismo SHA, no los repitas localmente.
+4. Agrupa los hallazgos de revision y corrigelos en una sola ronda por bloque. Para cambios delicados, sugiere una revision cruzada con otra IA: __CROSS_REVIEW__
    TOPE DURO: maximo 1 ronda; una segunda SOLO si la primera hallo severidad alta; JAMAS una tercera (los hallazgos residuales se declaran en el spec/PR, no se re-revisan). Cada ronda cuesta ~100-150k tokens.
-4. Si el repo no tiene kit de calidad todavia, sugiere correrlo una vez: __INIT_REPO__ (no insistas si dice que no).
-5. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con __REPO_HYGIENE__ -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
+5. Una observacion tardia menor queda pendiente; solo seguridad, datos o el comportamiento solicitado reabren el ciclo. Despues del deploy ejecuta el checklist una sola vez y reutiliza evidencia valida mientras el SHA no cambie.
+6. Si el repo no tiene kit de calidad todavia, sugiere correrlo una vez: __INIT_REPO__ (no insistas si dice que no).
+7. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con __REPO_HYGIENE__ -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
 '@
 $SectionBody = $SectionBody.Replace('__CROSS_REVIEW__', (Join-Path $QualityKitDir 'cross-review.ps1'))
 $SectionBody = $SectionBody.Replace('__INIT_REPO__', (Join-Path $QualityKitDir 'init-repo.ps1'))
