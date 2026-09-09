@@ -288,7 +288,7 @@ Assert-True ($null -ne $pyClaudeMd -and $pyClaudeMd -match 'QUALITY-KIT CALIDAD 
 Assert-True ($null -ne $pyAgentsMd -and $pyAgentsMd -match 'QUALITY-KIT CALIDAD SECTION START') 'AGENTS.md was created with the Calidad section'
 Assert-True ($pyClaudeMd -match 'JAMAS') 'the Calidad section states the never-bypass-hooks rule'
 Assert-True ($pyClaudeMd -match 'pytest -x -q') 'the Calidad section documents the exact pytest pre-push command'
-Assert-True ($pyClaudeMd -match 'No vuelvas a ejecutar CI si el commit verificado no cambio') 'the managed Calidad section prevents repeated CI on the same SHA'
+Assert-True ($pyClaudeMd -match 'commit, push o CI ya validaron') 'the managed Calidad section reuses checks already run by hooks or CI on the same SHA'
 Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
 Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
 
@@ -297,8 +297,16 @@ Assert-True ($hygieneInstaller -match '(?ms)id:\s*context-docs-budget.*?language
 
 Write-Host ''
 Write-Host '=== TEST GROUP 1b: idempotency -- running init-repo.ps1 again changes nothing extra ==='
+Push-Location -LiteralPath $pyRepo
+try { Invoke-GitSilent -GitArgs @('remote', 'add', 'origin', 'https://github.com/gon0801/fake-py-repo.git') } finally { Pop-Location }
+$pyWorkflowPath = Join-Path $pyRepo '.github\workflows\quality.yml'
+New-Item -ItemType Directory -Path (Split-Path -Parent $pyWorkflowPath) -Force | Out-Null
+$customWorkflow = (Read-TextFile -Path (Join-Path $QualityKitDir 'templates\quality.yml')) + "`n# ajuste propio que init-repo debe preservar`n"
+Write-Utf8NoBomFile -Path $pyWorkflowPath -Content $customWorkflow
 $r1b = Invoke-InitRepo -RepoPath $pyRepo
 Assert-True ($r1b.ExitCode -eq 0) 'second init-repo.ps1 run also exits 0' "exit=$($r1b.ExitCode)"
+Assert-True ($r1b.Stdout -match 'generado por quality-kit pero fue modificado') 'a customized quality-kit workflow is recognized and reported instead of overwritten' "stdout=$($r1b.Stdout)"
+Assert-True ((Read-TextFile -Path $pyWorkflowPath) -eq $customWorkflow) 'a customized quality-kit workflow is preserved byte-for-byte'
 $pyClaudeMdAfter2 = Read-TextFile -Path (Join-Path $pyRepo 'CLAUDE.md')
 $markerCount = ([regex]::Matches($pyClaudeMdAfter2, [regex]::Escape('QUALITY-KIT CALIDAD SECTION START'))).Count
 Assert-True ($markerCount -eq 1) 'CLAUDE.md Calidad marker still appears exactly once after a second run (not duplicated)' "count=$markerCount"
@@ -1984,9 +1992,14 @@ Assert-True ($claudeMdAfterInstall -match 'Some pre-existing content that must s
 Assert-True ($claudeMdAfterInstall -match 'REGLAS DE CALIDAD') 'install-ai-rules.ps1 adds the REGLAS DE CALIDAD section to CLAUDE.md'
 Assert-True ($claudeMdAfterInstall -match 'JAMAS') 'the section states the never-bypass-hooks rule'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review.ps1')) 'the section mentions cross-review.ps1 for delicate changes'
+Assert-True ($claudeMdAfterInstall -match 'pruebas focalizadas') 'the global section limits iteration to focused tests'
+Assert-True ($claudeMdAfterInstall -match 'bateria completa una sola vez') 'the global section limits the full battery to one final run'
+Assert-True ($claudeMdAfterInstall -match 'commit, push o CI ya validaron') 'the global section reuses hook and CI evidence for an unchanged SHA'
+Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the global section consolidates review findings into one round'
+Assert-True ($claudeMdAfterInstall -match 'observacion tardia menor') 'the global section prevents minor late findings from reopening the cycle'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('init-repo.ps1')) 'the section mentions init-repo.ps1 for repos without a quality kit yet'
 $claudeMdLineCount = @($claudeMdAfterInstall -split "`n" | Where-Object { $_ -match 'REGLAS DE CALIDAD|^\d\.|QUALITY-KIT REGLAS' }).Count
-Assert-True ($claudeMdLineCount -le 8) 'the REGLAS DE CALIDAD section stays compact (about 8 lines), matching the discipline of a global rules file' "counted content lines=$claudeMdLineCount"
+Assert-True ($claudeMdLineCount -le 12) 'the REGLAS DE CALIDAD section stays compact (about 12 lines), matching the discipline of a global rules file' "counted content lines=$claudeMdLineCount"
 
 Assert-True (Test-Path -LiteralPath $fakeCodexAgents) 'install-ai-rules.ps1 CREATED ~/.codex/AGENTS.md, which did not exist before'
 $codexAgentsAfterInstall = Read-TextFile -Path $fakeCodexAgents
