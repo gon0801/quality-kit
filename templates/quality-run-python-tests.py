@@ -61,9 +61,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for comando in _comandos_candidatos(raiz):
         if _admite_modulo(comando, conocidos.modulo, raiz):
-            return subprocess.call(
-                [*comando, "-m", conocidos.modulo, *argumentos], cwd=directorio
-            )
+            return subprocess.call([*comando, "-m", conocidos.modulo, *argumentos], cwd=directorio)
 
     print(
         f"quality-kit: no se encontro un Python capaz de importar {conocidos.modulo}",
