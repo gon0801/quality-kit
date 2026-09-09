@@ -291,6 +291,9 @@ Assert-True ($pyClaudeMd -match 'pytest -x -q') 'the Calidad section documents t
 Assert-True ($pyClaudeMd -match 'commit, push o CI ya validaron') 'the managed Calidad section reuses checks already run by hooks or CI on the same SHA'
 Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
 Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
+Assert-True ($pyClaudeMd -match '8\. CI: la bateria completa corre en jobs paralelos cuya union es la bateria') 'the Calidad section includes rule 8 (CI paralelo), summarized, for hosts that do not read the global rules'
+Assert-True ($pyClaudeMd -match 'nunca se recorta ni se saltea por tipo de cambio') 'rule 8 in Calidad says the battery is never trimmed or skipped by change type'
+Assert-True (([regex]::Matches($pyClaudeMd, '8\. CI:')).Count -eq 1) 'rule 8 appears exactly once in the generated CLAUDE.md Calidad section'
 
 $hygieneInstaller = Read-TextFile -Path $InstallRepoHygieneScript
 Assert-True ($hygieneInstaller -match '(?ms)id:\s*context-docs-budget.*?language:\s*python') 'repo-hygiene uses pre-commit Python instead of assuming a system `python` alias'
@@ -1998,8 +2001,18 @@ Assert-True ($claudeMdAfterInstall -match 'commit, push o CI ya validaron') 'the
 Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the global section consolidates review findings into one round'
 Assert-True ($claudeMdAfterInstall -match 'observacion tardia menor') 'the global section prevents minor late findings from reopening the cycle'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('init-repo.ps1')) 'the section mentions init-repo.ps1 for repos without a quality kit yet'
+Assert-True ($claudeMdAfterInstall -match '8\. CI: la bateria completa corre en jobs paralelos cuya union es la bateria') 'rule 8 is present with the exact opening required by the kit'
+Assert-True ($claudeMdAfterInstall -match [regex]::Escape('SAIKIT_SHARD=i/N')) 'rule 8 names the bash shard form SAIKIT_SHARD=i/N'
+Assert-True ($claudeMdAfterInstall -match [regex]::Escape('pytest: `-n auto`')) 'rule 8 names pytest -n auto'
+Assert-True ($claudeMdAfterInstall -match [regex]::Escape('jest/vitest: `--shard`')) 'rule 8 names jest/vitest --shard'
+Assert-True ($claudeMdAfterInstall -match 'nunca se recorta ni se saltea por\s+tipo de cambio') 'rule 8 forbids trimming or skipping the battery by change type'
+Assert-True ($claudeMdAfterInstall -match 'Los checks que leen docs o ledger reales van en un job propio') 'rule 8 puts docs/ledger checkers in their own job'
+Assert-True ($claudeMdAfterInstall -match 'docs/chore/cierre') 'rule 8 states the docs/chore/cierre fast lane'
+Assert-True ($claudeMdAfterInstall -match 'Los cierres de ledger de un bloque van en un solo PR') 'rule 8 requires ledger closures of a block in a single PR'
+Assert-True ($claudeMdAfterInstall -match 'JAMAS uses --no-verify') 'rules 1-7 are preserved: rule 1 still forbids --no-verify'
+Assert-True (([regex]::Matches($claudeMdAfterInstall, '8\. CI:')).Count -eq 1) 'rule 8 appears exactly once after the first install' "count=$(([regex]::Matches($claudeMdAfterInstall, '8\. CI:')).Count)"
 $claudeMdLineCount = @($claudeMdAfterInstall -split "`n" | Where-Object { $_ -match 'REGLAS DE CALIDAD|^\d\.|QUALITY-KIT REGLAS' }).Count
-Assert-True ($claudeMdLineCount -le 12) 'the REGLAS DE CALIDAD section stays compact (about 12 lines), matching the discipline of a global rules file' "counted content lines=$claudeMdLineCount"
+Assert-True ($claudeMdLineCount -le 14) 'the REGLAS DE CALIDAD section stays compact after adding rule 8 (heading + markers + 8 numbered rules)' "counted content lines=$claudeMdLineCount"
 
 Assert-True (Test-Path -LiteralPath $fakeCodexAgents) 'install-ai-rules.ps1 CREATED ~/.codex/AGENTS.md, which did not exist before'
 $codexAgentsAfterInstall = Read-TextFile -Path $fakeCodexAgents
@@ -2018,6 +2031,7 @@ Assert-True ($rInstall2.ExitCode -eq 0) 'second install-ai-rules.ps1 run also ex
 $claudeMdAfterInstall2 = Read-TextFile -Path $fakeClaudeMd
 $claudeMarkerCount = ([regex]::Matches($claudeMdAfterInstall2, [regex]::Escape('QUALITY-KIT REGLAS DE CALIDAD START'))).Count
 Assert-True ($claudeMarkerCount -eq 1) 'CLAUDE.md REGLAS DE CALIDAD marker appears exactly once after a second install run' "count=$claudeMarkerCount"
+Assert-True (([regex]::Matches($claudeMdAfterInstall2, '8\. CI:')).Count -eq 1) 'rule 8 appears exactly once after a second install run (idempotent, no duplicate)' "count=$(([regex]::Matches($claudeMdAfterInstall2, '8\. CI:')).Count)"
 Assert-True ($claudeMdAfterInstall2 -match 'Some pre-existing content that must survive untouched') 'pre-existing content still survives after a second install run'
 
 Write-Host ''
@@ -2265,7 +2279,8 @@ Assert-True ($ciYaml -match [regex]::Escape('Generado por quality-kit (install-c
 Assert-True ($ciYaml -match [regex]::Escape('run: bash tests/run.sh')) 'the job runs the default entrypoint tests/run.sh'
 Assert-True ($ciYaml -match 'timeout-minutes: 30') 'the default timeout is 30 minutes'
 Assert-True ($ciYaml -notmatch '(?m)^\s*env:') 'without -EnvVar the job has no env block'
-Assert-True ($ciYaml -notmatch '__TIMEOUT_MINUTES__|__TEST_ENTRY__|__ENV_BLOCK__') 'no template placeholder survives in the written yaml'
+Assert-True ($ciYaml -notmatch '__TIMEOUT_MINUTES__|__TEST_ENTRY__|__ENV_BLOCK__|__STRATEGY_BLOCK__|__GATE_JOB__') 'no template placeholder survives in the written yaml'
+Assert-True ($ciYaml -notmatch 'SAIKIT_SHARD') 'without -Shards the workflow is a single job as today (no SAIKIT_SHARD matrix)'
 Assert-True ($rCi.Stdout -match 'DECLARANDOLOS') 'without -EnvVar the installer reminds about DECLARED skips for Windows-bound tests'
 
 Write-Host ''
@@ -2454,6 +2469,135 @@ $rInitBare = Invoke-ScriptCapture -ScriptPath $InitRepoScript -ScriptArgs @('-Re
 Assert-True ($rInitBare.ExitCode -eq 0) 'init-repo exits 0 on the no-remote repo' "exit=$($rInitBare.ExitCode)"
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $policyInitBare '.claude-code-harness.config.yaml'))) 'NO policy yaml is written when there is no CI net to back an allow'
 Assert-True ($rInitBare.Stdout -match 'Salteo la politica de push') 'init-repo says out loud that the policy was skipped and why'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 7d: install-ci-linux.ps1 -Shards N (matrix + agregador, o se niega) ==='
+$ciShardOk = New-FakeGitRepo -Name 'fake-ci-linux-shards-ok'
+New-Item -ItemType Directory -Path (Join-Path $ciShardOk 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciShardOk 'tests\run.sh') -Content "#!/bin/bash`n# Honra SAIKIT_SHARD=i/N: reparte archivos de la particion.`nexit 0`n"
+$rCiShards = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciShardOk, '-Shards', '4')
+Assert-True ($rCiShards.ExitCode -eq 0) 'install-ci-linux.ps1 -Shards 4 exits 0 when run.sh mentions SAIKIT_SHARD' "exit=$($rCiShards.ExitCode) stderr=$($rCiShards.Stderr) stdout=$($rCiShards.Stdout)"
+$ciShardYaml = Read-TextFile -Path (Join-Path $ciShardOk '.github\workflows\suite-linux.yml')
+Assert-True ($null -ne $ciShardYaml) '-Shards 4 wrote suite-linux.yml'
+Assert-True ($ciShardYaml -match [regex]::Escape("shard: ['1/4', '2/4', '3/4', '4/4']")) 'the matrix lists the four complete shards 1/4..4/4'
+Assert-True ($ciShardYaml -match 'fail-fast: false') 'the shard matrix has fail-fast: false so one red shard does not hide the others'
+Assert-True ($ciShardYaml -match [regex]::Escape('SAIKIT_SHARD: ${{ matrix.shard }}')) 'the job passes SAIKIT_SHARD from the matrix'
+Assert-True ($ciShardYaml -match '(?m)^  gate:') 'an aggregator job named gate is present'
+Assert-True ($ciShardYaml -match 'if: always\(\)') 'the gate job has if: always() so a failed shard cannot skip the lock'
+Assert-True ($ciShardYaml -match 'needs: \[suite\]') 'the gate job aggregates the suite job'
+Assert-True ($ciShardYaml -notmatch '__STRATEGY_BLOCK__|__GATE_JOB__|__TIMEOUT_MINUTES__') 'no template placeholder survives in the sharded yaml'
+
+$ciShardNo = New-FakeGitRepo -Name 'fake-ci-linux-shards-no'
+New-Item -ItemType Directory -Path (Join-Path $ciShardNo 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciShardNo 'tests\run.sh') -Content "#!/bin/bash`nexit 0`n"
+$rCiShardsNo = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciShardNo, '-Shards', '4')
+Assert-True ($rCiShardsNo.ExitCode -ne 0) 'install-ci-linux.ps1 -Shards 4 refuses when run.sh does NOT mention SAIKIT_SHARD' "exit=$($rCiShardsNo.ExitCode)"
+Assert-True ($rCiShardsNo.Stdout -match 'SAIKIT_SHARD') 'the refusal names SAIKIT_SHARD as the reason (no silent workflow that fails on every push)' "stdout=$($rCiShardsNo.Stdout)"
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $ciShardNo '.github\workflows\suite-linux.yml'))) 'nothing was written into the refused -Shards repo'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 10: quality.yml paralelo (pytest -n auto, opt-out, jest shard, gate) ==='
+function Add-FakeGithubRemote {
+    param([string]$RepoPath, [string]$Slug)
+    Invoke-GitSilent -GitArgs @('-C', $RepoPath, 'remote', 'add', 'origin', "https://github.com/gon0801/$Slug.git")
+}
+
+$ciPyPar = New-FakeGitRepo -Name 'fake-ci-pytest-parallel'
+Write-Utf8NoBomFile -Path (Join-Path $ciPyPar 'pyproject.toml') -Content "[project]`nname = ""fake-ci-pytest-parallel""`nversion = ""0.1.0""`n"
+New-Item -ItemType Directory -Path (Join-Path $ciPyPar 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciPyPar 'tests\test_sample.py') -Content "def test_ok():`n    assert 1 + 1 == 2`n"
+Add-FakeGithubRemote -RepoPath $ciPyPar -Slug 'fake-ci-pytest-parallel'
+$rCiPyPar = Invoke-InitRepo -RepoPath $ciPyPar
+Assert-True ($rCiPyPar.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a pytest fixture with a GitHub remote' "exit=$($rCiPyPar.ExitCode) stderr=$($rCiPyPar.Stderr)"
+$ciPyParYaml = Read-TextFile -Path (Join-Path $ciPyPar '.github\workflows\quality.yml')
+Assert-True ($null -ne $ciPyParYaml) 'quality.yml was generated for the pytest fixture'
+Assert-True ($ciPyParYaml -match '(?m)^\s+pytest -n auto -q\s*$') 'generated quality.yml runs pytest -n auto -q by default'
+Assert-True ($ciPyParYaml -match 'pytest-xdist') 'generated quality.yml installs pytest-xdist'
+Assert-True ($ciPyParYaml -match 'QUALITY_KIT_PYTEST_SERIAL') 'the workflow documents the QUALITY_KIT_PYTEST_SERIAL opt-out'
+Assert-True ($ciPyParYaml -match '(?m)^  gate:') 'quality.yml has a separate gate job'
+Assert-True ($ciPyParYaml -match 'if: always\(\)') 'the quality.yml gate job has if: always()'
+Assert-True ($ciPyParYaml -match 'tools/check-\*\.sh') 'the gate job looks for tools/check-*.sh on real docs'
+Assert-True ($ciPyParYaml -match 'tools/check_\*\.py') 'the gate job looks for tools/check_*.py on real docs'
+Assert-True ($ciPyParYaml -match 'sale 0') 'if no checkers exist the gate job declares it and exits 0'
+Assert-True ($ciPyParYaml -notmatch 'paths-ignore|paths:') 'the battery is NOT skipped by change type (no path filters)'
+Assert-True ($ciPyParYaml -notmatch '__PYTEST_CMD__|__NODE_IN_QUALITY_JOB__|__NODE_SHARD_JOB__|__GATE_NEEDS__|__GATE_RESULTS_ENV__|__GATE_RESULTS_FOR__') 'no quality.yml placeholder survives'
+Assert-True ($rCiPyPar.Stdout -match 'CI ya corre la bateria completa') 'pytest -n auto still counts as CI running the full battery (pre-push stays smoke)' "stdout=$($rCiPyPar.Stdout)"
+$ciPyParConfig = Read-TextFile -Path (Join-Path $ciPyPar '.pre-commit-config.yaml')
+Assert-True ($ciPyParConfig -match '--collect-only') 'pre-push is collect-only smoke because CI runs the full pytest battery including -n auto' "config=$ciPyParConfig"
+
+$ciPySerial = New-FakeGitRepo -Name 'fake-ci-pytest-serial'
+Write-Utf8NoBomFile -Path (Join-Path $ciPySerial 'pyproject.toml') -Content "[project]`nname = ""fake-ci-pytest-serial""`nversion = ""0.1.0""`n"
+New-Item -ItemType Directory -Path (Join-Path $ciPySerial 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciPySerial 'tests\test_sample.py') -Content "def test_ok():`n    assert 1 + 1 == 2`n"
+Add-FakeGithubRemote -RepoPath $ciPySerial -Slug 'fake-ci-pytest-serial'
+$prevSerial = $env:QUALITY_KIT_PYTEST_SERIAL
+try {
+    $env:QUALITY_KIT_PYTEST_SERIAL = '1'
+    $rCiPySerial = Invoke-InitRepo -RepoPath $ciPySerial
+} finally {
+    if ($null -eq $prevSerial -or $prevSerial -eq '') {
+        Remove-Item Env:QUALITY_KIT_PYTEST_SERIAL -ErrorAction SilentlyContinue
+    } else {
+        $env:QUALITY_KIT_PYTEST_SERIAL = $prevSerial
+    }
+}
+Assert-True ($rCiPySerial.ExitCode -eq 0) 'init-repo.ps1 with QUALITY_KIT_PYTEST_SERIAL=1 exits 0' "exit=$($rCiPySerial.ExitCode) stderr=$($rCiPySerial.Stderr)"
+$ciPySerialYaml = Read-TextFile -Path (Join-Path $ciPySerial '.github\workflows\quality.yml')
+Assert-True ($ciPySerialYaml -notmatch '(?m)^\s+pytest -n auto') 'the opt-out removes pytest -n auto from the generated workflow'
+Assert-True ($ciPySerialYaml -match '(?m)^\s+pytest -q\s*$') 'the opt-out leaves a serial pytest -q command'
+
+$ciJest = New-FakeGitRepo -Name 'fake-ci-jest-shard'
+$jestPkg = '{"name":"fake-ci-jest-shard","version":"1.0.0","scripts":{"test":"jest"},"devDependencies":{"jest":"^29.0.0"}}'
+Write-Utf8NoBomFile -Path (Join-Path $ciJest 'package.json') -Content $jestPkg
+Add-FakeGithubRemote -RepoPath $ciJest -Slug 'fake-ci-jest-shard'
+$rCiJest = Invoke-InitRepo -RepoPath $ciJest
+Assert-True ($rCiJest.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a jest fixture with a GitHub remote' "exit=$($rCiJest.ExitCode) stderr=$($rCiJest.Stderr)"
+$ciJestYaml = Read-TextFile -Path (Join-Path $ciJest '.github\workflows\quality.yml')
+Assert-True ($ciJestYaml -match '--shard=') 'jest fixture generates a --shard matrix'
+Assert-True ($ciJestYaml -match [regex]::Escape("shard: ['1/2', '2/2']")) 'jest matrix is 1/2 and 2/2'
+Assert-True ($ciJestYaml -match '(?m)^  quality-node:') 'jest gets a dedicated quality-node job so pre-commit is not doubled'
+Assert-True ($ciJestYaml -match 'fail-fast: false') 'the jest shard matrix has fail-fast: false'
+Assert-True ($ciJestYaml -match 'if: always\(\)') 'jest workflow gate has if: always()'
+Assert-True ($ciJestYaml -match 'quality-node') 'the gate aggregates quality-node as well as quality'
+
+$ciNoJest = New-FakeGitRepo -Name 'fake-ci-node-noshard'
+$noJestPkg = '{"name":"fake-ci-node-noshard","version":"1.0.0","scripts":{"test":"node --test"}}'
+Write-Utf8NoBomFile -Path (Join-Path $ciNoJest 'package.json') -Content $noJestPkg
+Add-FakeGithubRemote -RepoPath $ciNoJest -Slug 'fake-ci-node-noshard'
+$rCiNoJest = Invoke-InitRepo -RepoPath $ciNoJest
+Assert-True ($rCiNoJest.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a node fixture without jest/vitest' "exit=$($rCiNoJest.ExitCode) stderr=$($rCiNoJest.Stderr)"
+$ciNoJestYaml = Read-TextFile -Path (Join-Path $ciNoJest '.github\workflows\quality.yml')
+Assert-True ($ciNoJestYaml -match 'npm test --if-present') 'without jest/vitest the node job stays a single npm test as today'
+Assert-True ($ciNoJestYaml -notmatch '--shard=') 'without jest/vitest there is no --shard matrix'
+Assert-True ($ciNoJestYaml -notmatch '(?m)^  quality-node:') 'without jest/vitest there is no extra quality-node job'
+Assert-True ($ciNoJestYaml -match '(?m)^  gate:') 'the single-job node workflow still has a gate job'
+Assert-True ($ciNoJestYaml -match 'if: always\(\)') 'the single-job node gate has if: always()'
+
+$ciNAutoDetect = New-FakeGitRepo -Name 'fake-ci-n-auto-detect'
+Write-Utf8NoBomFile -Path (Join-Path $ciNAutoDetect 'pyproject.toml') -Content "[project]`nname = ""fake-ci-n-auto-detect""`nversion = ""0.1.0""`n"
+New-Item -ItemType Directory -Path (Join-Path $ciNAutoDetect 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciNAutoDetect 'tests\test_sample.py') -Content "def test_ok():`n    assert 1 + 1 == 2`n"
+Add-FakeGithubRemote -RepoPath $ciNAutoDetect -Slug 'fake-ci-n-auto-detect'
+$nAutoWfDir = Join-Path $ciNAutoDetect '.github\workflows'
+New-Item -ItemType Directory -Path $nAutoWfDir -Force | Out-Null
+$nAutoYaml = @"
+# Generado por quality-kit (init-repo.ps1)
+name: Quality
+on: [push]
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Python tests
+        run: |
+          pip install pytest pytest-xdist
+          pytest -n auto -q
+"@
+Write-Utf8NoBomFile -Path (Join-Path $nAutoWfDir 'quality.yml') -Content $nAutoYaml
+$rNAutoDetect = Invoke-InitRepo -RepoPath $ciNAutoDetect
+Assert-True ($rNAutoDetect.ExitCode -eq 0) 'init-repo.ps1 exits 0 when an existing quality.yml already has pytest -n auto -q' "exit=$($rNAutoDetect.ExitCode) stderr=$($rNAutoDetect.Stderr)"
+$nAutoConfig = Read-TextFile -Path (Join-Path $ciNAutoDetect '.pre-commit-config.yaml')
+Assert-True ($nAutoConfig -match '--collect-only') 'pytest -n auto -q in an existing workflow still counts as the full battery (auto is not a path)' "config=$nAutoConfig stdout=$($rNAutoDetect.Stdout)"
 
 Write-Host ''
 Write-Host "=== SUMMARY: $script:PassCount passed, $script:FailCount failed ==="

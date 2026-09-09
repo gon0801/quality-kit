@@ -20,7 +20,7 @@
 # Uso:
 #   pwsh -NoProfile -File ./install-ci-linux.ps1 -RepoPath <repo> `
 #       [-TestEntry tests/run.sh] [-TimeoutMinutes 30] `
-#       [-EnvVar "SAIKIT_CI_LINUX=1,OTRA=valor"]
+#       [-EnvVar "SAIKIT_CI_LINUX=1,OTRA=valor"] [-Shards N]
 #
 # Idempotente: re-correrlo refresca el workflow si lo genero el kit; si el
 # repo tiene un suite-linux.yml propio (sin marca), se respeta y no se toca.
@@ -34,7 +34,12 @@ param(
     # workflow que GitHub Actions rechaza; 360 es el tope de un job hosted.
     [ValidateRange(1, 360)]
     [int]$TimeoutMinutes = 30,
-    [string[]]$EnvVar = @()
+    [string[]]$EnvVar = @(),
+    # 1 = un job como hoy. >=2 = matrix 1/N..N/N con SAIKIT_SHARD y job
+    # agregador `gate`. El runner tiene que mencionar SAIKIT_SHARD o se
+    # rehusa (no dejar un workflow que falla en cada push).
+    [ValidateRange(1, 32)]
+    [int]$Shards = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,6 +81,13 @@ if (-not (Test-Path -LiteralPath $entryLocal -PathType Leaf)) {
     Write-Host '    Si la suite bash vive en otra ruta, pasala con -TestEntry <ruta/relativa.sh>.'
     exit 1
 }
+if ($Shards -gt 1) {
+    $entryText = Read-TextFile -Path $entryLocal
+    if ($null -eq $entryText -or $entryText -notmatch 'SAIKIT_SHARD') {
+        Write-Host "==> [X] -Shards $Shards requiere que $TestEntry mencione SAIKIT_SHARD (forma i/N). Sin eso el workflow falla en cada push -- no lo escribo."
+        exit 1
+    }
+}
 
 # --- 2. Validar y armar el bloque env ---------------------------------------
 # Cada -EnvVar es NOMBRE=valor. Se acepta ademas UNA lista separada por comas
@@ -87,6 +99,10 @@ if (-not (Test-Path -LiteralPath $entryLocal -PathType Leaf)) {
 $envPairs = @()
 foreach ($raw in $EnvVar) { $envPairs += ($raw -split ',') }
 $envLines = @()
+if ($Shards -gt 1) {
+    # Sin comillas: la expresion de GitHub no se interpola adentro de comillas simples.
+    $envLines += '          SAIKIT_SHARD: ${{ matrix.shard }}'
+}
 foreach ($pair in $envPairs) {
     if ($pair -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
         Write-Host "==> [X] -EnvVar '$pair' no tiene forma NOMBRE=valor -- no se escribio nada."
@@ -99,6 +115,34 @@ foreach ($pair in $envPairs) {
 $envBlock = ''
 if ($envLines.Count -gt 0) {
     $envBlock = "        env:`n" + (($envLines -join "`n") + "`n")
+}
+$strategyBlock = ''
+$gateJob = ''
+if ($Shards -gt 1) {
+    $shardItems = @()
+    for ($i = 1; $i -le $Shards; $i++) {
+        $shardItems += "'$i/$Shards'"
+    }
+    $strategyBlock = "    strategy:`n      fail-fast: false`n      matrix:`n        shard: [" + ($shardItems -join ', ') + "]`n"
+    $gateJob = @'
+
+  gate:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [suite]
+    steps:
+      - name: Todos los jobs de calidad en verde
+        env:
+          R_SUITE: ${{ needs.suite.result }}
+        run: |
+          rc=0
+          for par in "suite=$R_SUITE"; do
+            printf '%s\n' "$par"
+            case "$par" in *=success) ;; *) rc=1 ;; esac
+          done
+          [ "$rc" -eq 0 ] || { echo "gate: algun job de calidad NO quedo en success" >&2; exit 1; }
+          echo "gate: OK -- todos en success"
+'@
 }
 
 # --- 3. Tres estados sobre el destino ---------------------------------------
@@ -118,6 +162,8 @@ $content = Read-TextFile -Path $TemplatePath
 $content = $content.Replace('__TIMEOUT_MINUTES__', [string]$TimeoutMinutes)
 $content = $content.Replace('__TEST_ENTRY__', $TestEntry)
 $content = $content.Replace('__ENV_BLOCK__', $envBlock)
+$content = $content.Replace('__STRATEGY_BLOCK__', $strategyBlock)
+$content = $content.Replace('__GATE_JOB__', $gateJob)
 
 if ($null -ne $existing -and $existing -eq $content) {
     Write-Host '==> [OK] .github\workflows\suite-linux.yml ya esta al dia -- sin cambios.'
@@ -127,7 +173,9 @@ if (-not (Test-Path -LiteralPath $workflowDir)) {
     New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
 }
 [System.IO.File]::WriteAllText($workflowPath, $content, $Utf8NoBom)
-Write-Host "==> [OK] Escribi .github\workflows\suite-linux.yml (entry: $TestEntry, timeout: $TimeoutMinutes min)."
+$shardNote = ''
+if ($Shards -gt 1) { $shardNote = ", shards: $Shards" }
+Write-Host "==> [OK] Escribi .github\workflows\suite-linux.yml (entry: $TestEntry, timeout: $TimeoutMinutes min$shardNote)."
 if ($envLines.Count -gt 0) {
     Write-Host "    Variables de entorno del job: $($EnvVar -join ', ')"
 } else {

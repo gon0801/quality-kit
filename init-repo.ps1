@@ -524,8 +524,9 @@ function Test-CiRunsFullPytest {
     # esta deteccion corre ANTES de que Copy-QualityWorkflowIfSafe escriba
     # quality.yml, asi que sin esto el repo nacia con la bateria completa en
     # local aunque la MISMA corrida le instalara el CI que la corre. La
-    # plantilla del kit (templates/quality.yml) corre `pytest -q` entero: si
-    # el kit va a instalarla, cuenta como CI que corre la suite.
+    # plantilla del kit (templates/quality.yml) corre `pytest -n auto -q` entero
+    # (o `pytest -q` con QUALITY_KIT_PYTEST_SERIAL=1): si el kit va a
+    # instalarla, cuenta como CI que corre la suite.
     $nuestroWorkflow = Join-Path (Join-Path $RepoPath '.github\workflows') 'quality.yml'
     # El paso de tests de templates/quality.yml esta condicionado a
     # `hashFiles('pyproject.toml', 'requirements.txt') != ''`: SIN uno de esos
@@ -537,7 +538,7 @@ function Test-CiRunsFullPytest {
     if ($tieneManifiesto -and (Test-HasGithubRemote -RepoPath $RepoPath)) {
         if (-not (Test-Path -LiteralPath $nuestroWorkflow)) { return $true }
         $existente = Read-TextFile -Path $nuestroWorkflow
-        $plantilla = Read-TextFile -Path (Join-Path $TemplatesDir 'quality.yml')
+        $plantilla = Get-QualityWorkflowContent -RepoPath $RepoPath
         # Un quality.yml AJENO no cuenta aca: no sabemos que corre, y ademas
         # el kit no lo pisa (Copy-QualityWorkflowIfSafe lo respeta). Cae al
         # analisis literal de abajo, que mira lo que realmente ejecuta. Un
@@ -566,6 +567,11 @@ function Test-CiRunsFullPytest {
             # ACOTADA por filtro (-k/-m/--deselect/--last-failed) tampoco es la
             # bateria: corre un subconjunto (hallazgo Greptile PR #3).
             if ($despues -match '(^|\s)(-k|-m|--deselect|--lf|--last-failed|--ignore)(\s|=)') { continue }
+            # pytest-xdist: `-n auto` / `--numprocesses=auto` -- `auto` no es un
+            # path, es el valor de la flag. Sin esto, `-n auto` se leia como
+            # pytest acotado a la ruta "auto" y CI NO contaba como bateria
+            # completa (el pre-push volvia a cobrarla en local).
+            $despues = [regex]::Replace($despues, '(^|\s)(-n|--numprocesses)(\s+|=)\S+', ' ')
             # ACOTADA por ruta: cualquier argumento posicional (no-opcion) es un
             # path o nodeid -- `pytest tests`, `pytest tests/x.py::test` incluidos.
             $args = ($despues -split '\s+') | Where-Object { $_ -ne '' }
@@ -718,6 +724,23 @@ function Test-HasRealNpmTestScript {
     if ([string]::IsNullOrWhiteSpace($testCmd)) { return $false }
     if ($testCmd -match 'Error: no test specified') { return $false }
     return $true
+}
+
+function Test-HasJestOrVitest {
+    param($PackageJson)
+    if ($null -eq $PackageJson) { return $false }
+    foreach ($section in @('dependencies', 'devDependencies', 'peerDependencies')) {
+        if (-not ($PackageJson.PSObject.Properties.Name -contains $section)) { continue }
+        $deps = $PackageJson.$section
+        if ($null -eq $deps) { continue }
+        $names = @($deps.PSObject.Properties.Name)
+        if ($names -contains 'jest' -or $names -contains 'vitest' -or $names -contains '@jest/globals') { return $true }
+    }
+    if (Test-HasRealNpmTestScript -PackageJson $PackageJson) {
+        $testCmd = [string]$PackageJson.scripts.test
+        if ($testCmd -match '(^|[\s/])(jest|vitest)(\s|$)') { return $true }
+    }
+    return $false
 }
 
 function Test-HasGithubRemote {
@@ -879,18 +902,74 @@ function Write-PreCommitConfigIfSafe {
 # GitHub Actions workflow
 # ------------------------------------------------------------------
 
+function Get-QualityWorkflowContent {
+    param([string]$RepoPath)
+    $templateContent = Read-TextFile -Path (Join-Path $TemplatesDir 'quality.yml')
+    $pytestCmd = 'pytest -n auto -q'
+    if ($env:QUALITY_KIT_PYTEST_SERIAL -eq '1') {
+        $pytestCmd = 'pytest -q'
+    }
+    $packageJson = Get-PackageJson -RepoPath $RepoPath
+    $shardNode = Test-HasJestOrVitest -PackageJson $packageJson
+
+    $nodeInQuality = "      - name: Run Node tests`n        if: hashFiles('package.json') != ''`n        run: npm test --if-present"
+    $nodeShardJob = ''
+    $gateNeeds = '[quality]'
+    $gateEnv = '          R_QUALITY: ${{ needs.quality.result }}'
+    $gateFor = '"quality=$R_QUALITY"'
+    if ($shardNode) {
+        $nodeInQuality = ''
+        $nodeShardJob = @'
+
+  quality-node:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/2', '2/2']
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+      - name: Install Node dependencies
+        if: hashFiles('package-lock.json') != ''
+        run: npm ci
+      - name: Run Node tests (shard)
+        run: npm test -- --shard=${{ matrix.shard }}
+'@
+        $gateNeeds = '[quality, quality-node]'
+        $gateEnv = @'
+          R_QUALITY: ${{ needs.quality.result }}
+          R_NODE: ${{ needs['quality-node'].result }}
+'@
+        $gateFor = '"quality=$R_QUALITY" "quality-node=$R_NODE"'
+    }
+
+    # .Replace() literal (no regex): el yaml interpola `${{ }}` y un -replace
+    # de PowerShell lo corromperia.
+    $content = $templateContent.Replace('__PYTEST_CMD__', $pytestCmd)
+    $content = $content.Replace('__NODE_IN_QUALITY_JOB__', $nodeInQuality)
+    $content = $content.Replace('__NODE_SHARD_JOB__', $nodeShardJob)
+    $content = $content.Replace('__GATE_NEEDS__', $gateNeeds)
+    $content = $content.Replace('__GATE_RESULTS_ENV__', $gateEnv)
+    $content = $content.Replace('__GATE_RESULTS_FOR__', $gateFor)
+    return $content
+}
+
 function Copy-QualityWorkflowIfSafe {
     param([string]$RepoPath)
     $workflowDir = Join-Path $RepoPath '.github\workflows'
     $workflowPath = Join-Path $workflowDir 'quality.yml'
-    $templateContent = Read-TextFile -Path (Join-Path $TemplatesDir 'quality.yml')
+    $generated = Get-QualityWorkflowContent -RepoPath $RepoPath
     if (Test-Path -LiteralPath $workflowPath) {
         $existing = Read-TextFile -Path $workflowPath
         if ($null -ne $existing -and $existing -notmatch [regex]::Escape($WorkflowMarker)) {
             Write-Host "==> Ya existe .github\workflows\quality.yml y NO fue generado por quality-kit -- no lo toco."
             return $false
         }
-        if ($null -ne $existing -and $existing -ne $templateContent) {
+        if ($null -ne $existing -and $existing -ne $generated) {
             Write-Host "==> .github\workflows\quality.yml fue generado por quality-kit pero fue modificado -- no lo toco."
             return $false
         }
@@ -898,7 +977,7 @@ function Copy-QualityWorkflowIfSafe {
     if (-not (Test-Path -LiteralPath $workflowDir)) {
         New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
     }
-    Write-Utf8NoBomFile -Path $workflowPath -Content $templateContent
+    Write-Utf8NoBomFile -Path $workflowPath -Content $generated
     Write-Host '==> Escribi .github\workflows\quality.yml'
     return $true
 }
@@ -946,6 +1025,8 @@ function Get-CalidadSectionBody {
     $lines.Add('Reglas de hierro:')
     $lines.Add('1. Si un candado falla, se arregla el problema real -- JAMAS se usa `--no-verify` ni se saltea un candado.')
     $lines.Add('2. Cada bug arreglado incluye, en el mismo cambio, una prueba que lo habria atrapado.')
+    $lines.Add('8. CI: la bateria completa corre en jobs paralelos cuya union es la bateria (con candado); si un job pasa de ~10 min se shardea, nunca se recorta ni se saltea por tipo de cambio.')
+    $lines.Add('   Checks de docs/ledger en un job propio de segundos. Carril: docs/chore/cierre = fast; codigo = gate; medicion/release = +cross-review. Cierres de ledger de un bloque = un PR.')
     $lines.Add('')
     $lines.Add('Flujo de verificacion:')
     $lines.Add('- Durante la implementacion, corre solo las pruebas focalizadas del comportamiento modificado.')

@@ -24,8 +24,9 @@ jobs:
   suite:
     runs-on: ubuntu-latest
     timeout-minutes: __TIMEOUT_MINUTES__
-    steps:
+__STRATEGY_BLOCK__    steps:
       - uses: actions/checkout@v7
 
       - name: Correr la suite completa (__TEST_ENTRY__)
 __ENV_BLOCK__        run: bash __TEST_ENTRY__
+__GATE_JOB__

@@ -61,6 +61,13 @@ $SectionBody = @'
 5. Una observacion tardia menor queda pendiente; solo seguridad, datos o el comportamiento solicitado reabren el ciclo. Despues del deploy ejecuta el checklist una sola vez y reutiliza evidencia valida mientras el SHA no cambie.
 6. Si el repo no tiene kit de calidad todavia, sugiere correrlo una vez: __INIT_REPO__ (no insistas si dice que no).
 7. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con __REPO_HYGIENE__ -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
+8. CI: la bateria completa corre en jobs paralelos cuya union es la bateria
+   (con candado); si un job pasa de ~10 min se shardea (bash: `SAIKIT_SHARD=i/N`;
+   pytest: `-n auto`; jest/vitest: `--shard`), nunca se recorta ni se saltea por
+   tipo de cambio. Los checks que leen docs o ledger reales van en un job propio
+   de segundos, separado de la bateria. Carril por tipo de cambio: docs/chore/cierre
+   = fast (bots + lead); codigo = gate (+ reviewer); medicion viva/release = +
+   cross-review. Los cierres de ledger de un bloque van en un solo PR.
 '@
 $SectionBody = $SectionBody.Replace('__CROSS_REVIEW__', (Join-Path $QualityKitDir 'cross-review.ps1'))
 $SectionBody = $SectionBody.Replace('__INIT_REPO__', (Join-Path $QualityKitDir 'init-repo.ps1'))

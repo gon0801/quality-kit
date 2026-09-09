@@ -308,6 +308,12 @@ con estas reglas:
 6. Si el repo no tiene kit de calidad, sugerir `init-repo.ps1` una vez
    (sin insistir).
 
+8. CI: la bateria completa corre en jobs paralelos cuya union es la
+   bateria (con candado); si un job pasa de ~10 min se shardea, nunca se
+   recorta ni se saltea por tipo de cambio. Checks de docs/ledger en un
+   job propio. Carril: docs/chore/cierre = fast; codigo = gate;
+   medicion/release = +cross-review. Cierres de ledger de un bloque = un PR.
+
 Es idempotente (correrlo de nuevo no duplica nada) y deja una copia de
 seguridad con fecha antes de tocar cada archivo.
 
@@ -397,6 +403,34 @@ pwsh -NoProfile -File ./install-ci-linux.ps1 -RepoPath <repo> `
   `suite-linux.yml` escrito a mano se respeta y no se toca.
 - Candidato tipico: summonaikit-kimi (mismo molde de tests que
   summonaikit-claude).
+- `-Shards N` (N>=2): matrix `1/N..N/N` con `SAIKIT_SHARD` y un job
+  agregador `gate` (`if: always()`). Sin `-Shards`, un job como hoy. El
+  instalador se niega si el `run.sh` del repo no menciona `SAIKIT_SHARD`
+  (no dejar un workflow que falla en cada push).
+
+## CI paralelo (regla 8)
+
+La bateria completa corre en jobs paralelos cuya UNION es la bateria (con
+candado). Nunca se recorta ni se saltea por tipo de cambio. Si un job pasa
+de ~10 min se shardea: bash `SAIKIT_SHARD=i/N`, pytest `-n auto`
+(pytest-xdist; opt-out `QUALITY_KIT_PYTEST_SERIAL=1` al correr
+`init-repo.ps1`), jest/vitest `--shard`. Los checks que leen docs o ledger
+reales van en un job `gate` propio de segundos. Carril: docs/chore/cierre =
+fast (bots + lead); codigo = gate (+ reviewer); medicion viva/release = +
+cross-review. Los cierres de ledger de un bloque van en un solo PR.
+
+Para refrescar repos existentes (idempotente):
+
+```
+pwsh -NoProfile -File ./install-ai-rules.ps1
+pwsh -NoProfile -File ./new-repo.ps1 -RepoPath <repo>
+```
+
+`install-ai-rules.ps1` lo corre el operador (toca los archivos globales de
+IA). `new-repo.ps1` refresca la seccion Calidad del repo. Suites bash:
+`install-ci-linux.ps1 -RepoPath <repo> -Shards N` si el `run.sh` ya honra
+`SAIKIT_SHARD`. Un `quality.yml` generado por el kit y despues editado no
+se pisa; para adoptar la plantilla nueva, borralo y re-corre `new-repo.ps1`.
 
 ## Politica de push a ramas protegidas -- `install-branch-push-policy.ps1`
 
