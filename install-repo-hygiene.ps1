@@ -70,7 +70,9 @@ $HookBlock = @'
       - id: context-docs-budget
         name: capa de contexto dentro de presupuesto (repo-hygiene)
         entry: python tools/check_context_docs.py
-        language: system
+        # El entorno aislado de pre-commit aporta `python` en Windows,
+        # macOS y Linux; no depende de aliases del sistema anfitrion.
+        language: python
         pass_filenames: false
         files: '(^|/)(CLAUDE|AGENTS|AGENT)\.md$'
 # >>> QUALITY-KIT REPO-HYGIENE HOOK END

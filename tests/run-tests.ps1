@@ -10,11 +10,12 @@
 # capping, and prompt-building code path without ever spawning the CLI.
 
 $ErrorActionPreference = 'Stop'
-$QualityKitDir = 'C:\Users\ehven\quality-kit'
+$QualityKitDir = Split-Path -Parent $PSScriptRoot
 $InitRepoScript = Join-Path $QualityKitDir 'init-repo.ps1'
 $HealRepoScript = Join-Path $QualityKitDir 'heal-repo.ps1'
 $CrossReviewScript = Join-Path $QualityKitDir 'cross-review.ps1'
 $InstallAiRulesScript = Join-Path $QualityKitDir 'install-ai-rules.ps1'
+$InstallRepoHygieneScript = Join-Path $QualityKitDir 'install-repo-hygiene.ps1'
 $UninstallAiRulesScript = Join-Path $QualityKitDir 'uninstall-ai-rules.ps1'
 $InstallDocsGroomScript = Join-Path $QualityKitDir 'install-docs-groom.ps1'
 $UninstallDocsGroomScript = Join-Path $QualityKitDir 'uninstall-docs-groom.ps1'
@@ -254,6 +255,14 @@ Assert-True ($pyConfig -match 'ruff-check') '.pre-commit-config.yaml includes ru
 Assert-True ($pyConfig -match 'ruff-format') '.pre-commit-config.yaml includes ruff-format (Python detected)'
 Assert-True ($pyConfig -match 'pytest-pre-push') '.pre-commit-config.yaml includes the pytest pre-push hook (tests/ detected)'
 Assert-True ($pyConfig -match 'stages: \[pre-push\]') 'the pytest hook is staged for pre-push, not pre-commit'
+Assert-True ($pyConfig -match 'python tools/quality_run_python_tests.py pytest') 'pytest hook uses the managed portable runner instead of a host-specific Python path' "config=$pyConfig"
+Assert-True ($pyConfig -notmatch '\.venv[\\/]Scripts[\\/]python\.exe') 'pytest hook does not persist the Windows virtualenv path of the generating machine' "config=$pyConfig"
+Assert-True ($pyConfig -match '(?ms)id:\s*pytest-pre-push.*?language:\s*python') 'pytest hook receives a cross-platform bootstrap Python from pre-commit' "config=$pyConfig"
+Assert-True (Test-Path -LiteralPath (Join-Path $pyRepo 'tools\quality_run_python_tests.py')) 'init-repo installs the managed portable Python runner in the target repo'
+$portableRunner = Read-TextFile -Path (Join-Path $pyRepo 'tools\quality_run_python_tests.py')
+Assert-True ($portableRunner -match 'QUALITY-KIT PYTHON RUNNER') 'the installed portable runner keeps its quality-kit ownership marker'
+Assert-True ((Read-TextFile -Path $InitRepoScript) -match "'python', 'python3', 'py'") 'init-repo can discover the system Python aliases used by Windows, macOS and Linux'
+Assert-True ((Read-TextFile -Path $InitRepoScript) -match [regex]::Escape("'.venv/bin/python'")) 'init-repo validates fresh hooks with a Unix virtualenv when present'
 Assert-True (-not ($pyConfig -match 'eslint-local|prettier-local|npm-test-pre-push')) 'no Node-specific hooks leaked into a pure-Python repo'
 
 Assert-True (Test-Path -LiteralPath (Join-Path $pyRepo '.git\hooks\pre-commit')) 'the real git pre-commit hook was installed'
@@ -265,6 +274,12 @@ Assert-True ($null -ne $pyClaudeMd -and $pyClaudeMd -match 'QUALITY-KIT CALIDAD 
 Assert-True ($null -ne $pyAgentsMd -and $pyAgentsMd -match 'QUALITY-KIT CALIDAD SECTION START') 'AGENTS.md was created with the Calidad section'
 Assert-True ($pyClaudeMd -match 'JAMAS') 'the Calidad section states the never-bypass-hooks rule'
 Assert-True ($pyClaudeMd -match 'pytest -x -q') 'the Calidad section documents the exact pytest pre-push command'
+Assert-True ($pyClaudeMd -match 'No vuelvas a ejecutar CI si el commit verificado no cambio') 'the managed Calidad section prevents repeated CI on the same SHA'
+Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
+Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
+
+$hygieneInstaller = Read-TextFile -Path $InstallRepoHygieneScript
+Assert-True ($hygieneInstaller -match '(?ms)id:\s*context-docs-budget.*?language:\s*python') 'repo-hygiene uses pre-commit Python instead of assuming a system `python` alias'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 1b: idempotency -- running init-repo.ps1 again changes nothing extra ==='
@@ -416,7 +431,7 @@ $rRootUnittest = Invoke-InitRepo -RepoPath $rootUnittestRepo
 Assert-True ($rRootUnittest.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a repo with root tests/ using unittest, no pytest config' "exit=$($rRootUnittest.ExitCode) stderr=$($rRootUnittest.Stderr)"
 $rootUnittestYaml = Read-TextFile -Path (Join-Path $rootUnittestRepo '.pre-commit-config.yaml')
 Assert-True ($rootUnittestYaml -match 'unittest-pre-push') 'root tests/ with a real unittest.TestCase and no pytest config selects the unittest runner' "config=$rootUnittestYaml"
-Assert-True ($rootUnittestYaml -match [regex]::Escape('-m unittest discover -s tests -t .')) 'the root-level unittest entry uses "-s tests -t ." with no cd/bash wrapper needed' "config=$rootUnittestYaml"
+Assert-True ($rootUnittestYaml -match [regex]::Escape('quality_run_python_tests.py unittest discover -s tests -t .')) 'the root-level unittest entry uses the portable runner with "-s tests -t ."' "config=$rootUnittestYaml"
 Assert-True (-not ($rootUnittestYaml -match '(?m)^\s*entry:.*bash -c')) 'the root-level case''s actual entry line does NOT use the bash -c cd-into-parent wrapper (that is only for the nested case; the template''s explanatory comment mentions "bash -c" in prose, which is fine -- only the entry: line itself matters here)' "config=$rootUnittestYaml"
 
 Write-Host ''
@@ -432,8 +447,8 @@ $rMcp2Shape = Invoke-InitRepo -RepoPath $mcp2ShapeRepo
 Assert-True ($rMcp2Shape.ExitCode -eq 0) 'init-repo.ps1 exits 0 on the exact MCP-2 shape (app\tests, unittest, no pytest config)' "exit=$($rMcp2Shape.ExitCode) stderr=$($rMcp2Shape.Stderr)"
 $mcp2ShapeYaml = Read-TextFile -Path (Join-Path $mcp2ShapeRepo '.pre-commit-config.yaml')
 Assert-True ($mcp2ShapeYaml -match 'unittest-pre-push') 'the MCP-2 shape (nested app\tests, unittest) selects the unittest runner' "config=$mcp2ShapeYaml"
-Assert-True ($mcp2ShapeYaml -match [regex]::Escape("bash -c 'cd app && ")) 'the nested case cds into the parent subdirectory first, mirroring the real MCP-2 hand-fix' "config=$mcp2ShapeYaml"
-Assert-True ($mcp2ShapeYaml -match [regex]::Escape('-m unittest discover -s tests -t .')) 'the nested case still discovers with -s tests -t . once inside the parent dir' "config=$mcp2ShapeYaml"
+Assert-True ($mcp2ShapeYaml -match [regex]::Escape('--cwd app unittest discover -s tests -t .')) 'the nested case asks the portable runner to enter the parent before discovery' "config=$mcp2ShapeYaml"
+Assert-True ($mcp2ShapeYaml -match [regex]::Escape('unittest discover -s tests -t .')) 'the nested case still discovers with -s tests -t . once inside the parent dir' "config=$mcp2ShapeYaml"
 Assert-True ($rMcp2Shape.Stdout -match 'El runner de pruebas \(unittest\) funciona') 'init-repo.ps1 reports that it validated the unittest runner successfully before installing the hook'
 Assert-True (Test-Path -LiteralPath (Join-Path $mcp2ShapeRepo '.git\hooks\pre-push')) 'the real git pre-push hook was installed for the validated MCP-2 shape'
 
@@ -735,7 +750,7 @@ Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`
 # produce the normal DRY RUN shape (command + prompt + temp diff file).
 $rAuto = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto' -Excluir 'kimi'
 Assert-True ($rAuto.ExitCode -eq 0) '-Con auto -DryRun exits 0' "exit=$($rAuto.ExitCode) stderr=$($rAuto.Stderr)"
-Assert-True ($rAuto.Stdout -match [regex]::Escape('Cadena auto: claude -> grok -> qwen -> codex')) '-Con auto -Excluir kimi announces the chain without the excluded AI'
+Assert-True ($rAuto.Stdout -match [regex]::Escape('Cadena auto: claude -> glm -> grok -> qwen -> codex')) '-Con auto -Excluir kimi announces the current chain without the excluded AI'
 # Only the candidate list BEFORE the '(' matters: the parenthetical
 # "(excluido: kimi, ...)" legitimately names the excluded AI.
 Assert-True ($rAuto.Stdout -notmatch 'Cadena auto:[^(\r\n]*kimi') '-Con auto -Excluir kimi never lists kimi as a candidate'
@@ -746,7 +761,7 @@ Assert-True ($rAuto.Stdout -match 'DRY RUN') '-Con auto -DryRun still announces 
 # auto with no exclusion: full chain, strongest first.
 $rAutoFull = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto'
 Assert-True ($rAutoFull.ExitCode -eq 0) '-Con auto (sin -Excluir) -DryRun exits 0' "exit=$($rAutoFull.ExitCode)"
-Assert-True ($rAutoFull.Stdout -match [regex]::Escape('Cadena auto: claude -> grok -> kimi -> qwen -> codex')) '-Con auto announces the full chain, strongest brain first'
+Assert-True ($rAutoFull.Stdout -match [regex]::Escape('Cadena auto: claude -> glm -> grok -> kimi -> qwen -> codex')) '-Con auto announces the full current chain, strongest brain first'
 
 # self-review guard: asking an AI to review its own change must be refused.
 $rSelf = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'claude' -Excluir 'claude'
@@ -769,8 +784,8 @@ Assert-True ($rGrok.Stdout -match 'read_file') '-Con grok DryRun command allowli
 $rQwen = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'qwen'
 Assert-True ($rQwen.ExitCode -eq 0) '-Con qwen -DryRun exits 0' "exit=$($rQwen.ExitCode) stderr=$($rQwen.Stderr)"
 Assert-True ($rQwen.Stdout -match '(?m)^Comando:.*\s-p\s') '-Con qwen DryRun command uses qwen -p (non-interactive)'
-Assert-True ($rQwen.Stdout -match '--approval-mode plan') '-Con qwen DryRun command uses plan mode (read-only analysis, no edits/shell)'
-Assert-True ($rQwen.Stdout -match '--safe-mode') '-Con qwen DryRun command uses --safe-mode so skills/hooks/MCP cannot hijack the review'
+Assert-True ($rQwen.Stdout -match '(?m)^Comando:.*\s-y\s+-o\s+text') '-Con qwen DryRun auto-approves its read-only tool allowlist and requests text output'
+Assert-True ($rQwen.Stdout -notmatch '--approval-mode plan|--safe-mode') '-Con qwen DryRun omits obsolete flags that either do not exist or disable its tool exclusions'
 
 # exit-3 contract: with NO AI CLI findable on the child's PATH, auto mode
 # must fall all the way through the chain and exit 3 (the harness reads
