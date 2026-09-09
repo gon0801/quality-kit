@@ -18,7 +18,7 @@
 # se pasa aca con -EnvVar), nunca en silencio -- "not_observed != absent".
 #
 # Uso:
-#   powershell -ExecutionPolicy Bypass -File install-ci-linux.ps1 -RepoPath <repo> `
+#   pwsh -NoProfile -File ./install-ci-linux.ps1 -RepoPath <repo> `
 #       [-TestEntry tests/run.sh] [-TimeoutMinutes 30] `
 #       [-EnvVar "SAIKIT_CI_LINUX=1,OTRA=valor"]
 #

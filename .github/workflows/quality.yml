@@ -8,7 +8,11 @@ permissions:
 
 jobs:
   quality:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
@@ -24,15 +28,21 @@ jobs:
       - name: Validar sintaxis PowerShell
         shell: pwsh
         run: ./tests/validate-syntax.ps1
-      - name: Probar runner portable
-        run: python -m unittest tests/test_quality_run_python_tests.py
+      - name: Probar portabilidad
+        run: python -m unittest tests/test_quality_run_python_tests.py tests/test_macos_portability.py
       - name: Preparar stubs de CLI para DryRun
         shell: pwsh
         run: |
           $stubDir = Join-Path $env:RUNNER_TEMP "quality-cli-stubs"
           New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
           foreach ($name in @("kimi", "codex", "claude", "glm", "grok", "qwen")) {
-            "@echo off`r`nexit /b 0`r`n" | Set-Content -LiteralPath (Join-Path $stubDir "$name.cmd") -Encoding ascii
+            if ($env:OS -eq "Windows_NT") {
+              "@echo off`r`nexit /b 0`r`n" | Set-Content -LiteralPath (Join-Path $stubDir "$name.cmd") -Encoding ascii
+            } else {
+              $stub = Join-Path $stubDir $name
+              "#!/bin/sh`nexit 0`n" | Set-Content -LiteralPath $stub -Encoding utf8NoBOM
+              chmod +x $stub
+            }
           }
           $stubDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Ejecutar bateria completa

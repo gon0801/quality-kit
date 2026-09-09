@@ -5,7 +5,7 @@
 # session-heal.ps1 re-patches Chroma each arranque), NOT once-and-forget like
 # init-repo.ps1.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\heal-repo.ps1 -RepoPath <repo>
+#   pwsh -NoProfile -File ./heal-repo.ps1 -RepoPath <repo>
 #
 # The hole this closes (real incident): a repo has .pre-commit-config.yaml
 # committed (so it travels with every clone), but the actual git hook lives in
@@ -74,8 +74,18 @@ function Test-CommandWorks {
 # only if nothing else on PATH already provides a working Python.
 $KnownGoodPython = 'C:\Python314\python.exe'
 
+function Get-CurrentPowerShellExe {
+    $current = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    if ($current -and ((Split-Path -Leaf $current) -match '^(pwsh|powershell)(\.exe)?$')) { return $current }
+    foreach ($name in @('pwsh', 'powershell')) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($null -ne $command) { return $command.Source }
+    }
+    throw 'No se encontro el ejecutable de PowerShell actual.'
+}
+
 function Get-PythonExe {
-    $candidates = @('python', 'py', $KnownGoodPython)
+    $candidates = @('python', 'python3', 'py', $KnownGoodPython)
     foreach ($c in $candidates) {
         if (Test-CommandWorks -Exe $c -TestArgs @('--version')) { return $c }
     }
@@ -217,7 +227,8 @@ function Test-RepoIsMine {
 function Invoke-InitRepo {
     param([string]$RepoPath, [string]$QualityKitDir)
     $initScript = Join-Path $QualityKitDir 'init-repo.ps1'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $initScript -RepoPath $RepoPath | Out-Host
+    $powerShellExe = Get-CurrentPowerShellExe
+    & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $initScript -RepoPath $RepoPath | Out-Host
     return $LASTEXITCODE
 }
 

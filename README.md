@@ -24,16 +24,19 @@ importar que IA lo escribio:
    llenando de contenido viejo o repetido, sin tocar nunca los bloques que
    ya administran otras herramientas (este kit incluido).
 
-Todo esto vive en esta carpeta aparte (`C:\Users\ehven\quality-kit\`), igual
-que `kimi-summonaikit`. No es parte de ningun repo tuyo -- se usa DESDE
-afuera, apuntando a cada repo que quieras proteger.
+Todo esto vive en una carpeta aparte (por ejemplo `~/quality-kit`). No es
+parte de ningun repo tuyo: se usa desde afuera, apuntando a cada repo que
+quieras proteger. Los comandos de este README usan PowerShell 7 (`pwsh`),
+disponible en macOS, Linux y Windows. En Windows PowerShell 5.1 se puede
+reemplazar `pwsh` por `powershell`; los scripts conservan compatibilidad con
+ambos runtimes.
 
 ## 1. Candados de commit -- `init-repo.ps1`
 
 Corre esto UNA VEZ por repo, parado adentro del repo que queres proteger:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\init-repo.ps1
+pwsh -NoProfile -File ./init-repo.ps1
 ```
 
 Que hace:
@@ -153,18 +156,18 @@ de la que lo escribio -- una segunda opinion independiente y con ojos
 frescos, no la misma IA revisandose a si misma.
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con kimi
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con codex -Alcance staged
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con claude -Alcance last-commit
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con grok
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con qwen
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\cross-review.ps1 -Con auto -Excluir kimi -Archivos "engines/bid_motor.py,tests/test_bid_motor.py"
+pwsh -NoProfile -File ./cross-review.ps1 -Con kimi
+pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Alcance staged
+pwsh -NoProfile -File ./cross-review.ps1 -Con claude -Alcance last-commit
+pwsh -NoProfile -File ./cross-review.ps1 -Con grok
+pwsh -NoProfile -File ./cross-review.ps1 -Con qwen
+pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi
+pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engines/bid_motor.py,tests/test_bid_motor.py"
 ```
 
 - `-Con` (obligatorio): que IA hace la revision -- `kimi`, `codex`,
-  `claude`, `grok`, `qwen`, o `auto`.
-- `-Con auto`: prueba la cadena `claude -> grok -> kimi -> qwen -> codex` (el cerebro mas
+  `claude`, `glm`, `grok`, `qwen`, o `auto`.
+- `-Con auto`: prueba la cadena `claude -> glm -> grok -> kimi -> qwen -> codex` (el cerebro mas
   fuerte primero) y usa el PRIMERO que entregue una revision de verdad,
   saltando al que pongas en `-Excluir` (la IA que escribio el cambio: una
   IA no debe revisar su propio trabajo). Si un candidato no esta instalado
@@ -216,7 +219,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\c
 
 El diff se recorta a unos 60KB antes de mandarlo (con un aviso al final si
 se recorto) para no saturar el mensaje. El diff en si se guarda en un
-archivo temporal (fuera del repo, en la carpeta temporal de Windows) y se
+archivo temporal (fuera del repo, en la carpeta temporal del sistema) y se
 le pide a la IA que lo lea de ahi -- esto evita el limite de longitud que
 tiene Windows para un solo argumento de linea de comandos (unos 32.000
 caracteres), que un diff de 60KB superaria facil si se lo pasaramos
@@ -239,13 +242,10 @@ no tienen una ronda en vivo con un diff real:
   concretos (una funcion nueva sin prueba, un problema de formato, un
   detalle de fin de linea).
 - **codex exec**: funciona (confirmado con resultados reales de revision,
-  no solo un saludo), PERO con dos particularidades de esta maquina que
-  hay que conocer:
-  1. Una de Windows que `cross-review.ps1` ya resuelve por vos: `codex`
-     aca es un shim de `.cmd`, no un `.exe` directo, y lanzarlo directo
-     (sin pasar por `cmd.exe`) se quedaba colgado para siempre en vez de
-     terminar. `cross-review.ps1` ya lo lanza a traves de `cmd.exe /c`
-     automaticamente -- no tenes que hacer nada vos.
+  no solo un saludo), PERO con dos particularidades que hay que conocer:
+  1. En Windows, un shim `.cmd` se lanza mediante `cmd.exe /c`; en macOS y
+     Linux se ejecuta directamente el launcher nativo encontrado en `PATH`.
+     `cross-review.ps1` elige ambas rutas automaticamente.
   2. Una de tiempos de respuesta, que NO tiene arreglo desde este kit: en
      las pruebas en vivo, `codex exec` para una revision real tardo desde
      unos 10-25 segundos hasta mas de 10 minutos para tareas de
@@ -262,14 +262,12 @@ no tienen una ronda en vivo con un diff real:
   `--no-subagents`, `--disable-web-search`, `--always-approve` y un
   allowlist de herramientas de solo lectura (`read_file,grep,list_dir`)
   para que pueda verificar codigo fuera del diff sin editar y sin
-  colgarse en un prompt de permisos. Cableado contra la CLI real de
-  esta maquina (`grok.exe`); no es una prueba en vivo con un diff
+  colgarse en un prompt de permisos. Cableado contra la CLI real; no es una prueba en vivo con un diff
   real -- esa queda para cuando se use de verdad.
-- **qwen -p**: no interactivo, con `--approval-mode plan` (solo
-  analisis, no edita ni corre shell), `--safe-mode` (sin skills,
-  hooks ni MCP) y `-o text`. En esta maquina `qwen` es un `.cmd`,
-  igual que `codex`, y `cross-review.ps1` ya lo lanza via
-  `cmd.exe /c`. Tampoco tiene prueba en vivo con un diff real todavia.
+- **qwen -p**: no interactivo, con `-y` y `-o text`. Su configuracion global
+  debe excluir las herramientas de escritura, tal como explica el comentario
+  del script. En Windows acepta el shim `.cmd`; en macOS y Linux usa el
+  launcher nativo. Tampoco tiene prueba en vivo con un diff real todavia.
 
 Ver la seccion de troubleshooting mas abajo para mas detalle sobre estos
 dos puntos de Codex, y por si en tu maquina especifica `codex` pide
@@ -284,7 +282,7 @@ archivos de configuracion global de cada IA, y por diseno ninguna IA
 deberia poder tocar esos archivos por su cuenta.
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-ai-rules.ps1
+pwsh -NoProfile -File ./install-ai-rules.ps1
 ```
 
 Agrega una seccion corta "REGLAS DE CALIDAD (quality-kit)" (unas 8 lineas)
@@ -311,7 +309,7 @@ seguridad con fecha antes de tocar cada archivo.
 Para sacar esta seccion despues, si alguna vez queres:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\uninstall-ai-rules.ps1
+pwsh -NoProfile -File ./uninstall-ai-rules.ps1
 ```
 
 ## Auditoria de documentacion -- `docs-groom` (skill para las 3 IAs)
@@ -341,7 +339,7 @@ Instalarla (correlo vos mismo, una IA no deberia tocar la configuracion de
 otra IA por su cuenta):
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-docs-groom.ps1
+pwsh -NoProfile -File ./install-docs-groom.ps1
 ```
 
 Esto agrega la skill a las 3 IAs: `~/.claude/skills/docs-groom/`,
@@ -364,7 +362,7 @@ de la misma forma.
 Para sacarla despues:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\uninstall-docs-groom.ps1
+pwsh -NoProfile -File ./uninstall-docs-groom.ps1
 ```
 
 ## CI Linux para suites bash -- `install-ci-linux.ps1`
@@ -379,7 +377,7 @@ de `init-repo.ps1`, para no duplicar corridas push+PR; una rama protegida con
 otro nombre requiere editar `branches:` a mano).
 
 ```
-powershell -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-ci-linux.ps1 -RepoPath <repo> `
+pwsh -NoProfile -File ./install-ci-linux.ps1 -RepoPath <repo> `
     [-TestEntry tests/run.sh] [-TimeoutMinutes 30] [-EnvVar "SAIKIT_CI_LINUX=1,OTRA=valor"]
 ```
 
@@ -405,7 +403,7 @@ fallback (`harness.toml` en la raiz versionada del plugin) muere en cada
 update del plugin; el lugar correcto es el yaml del repo, commiteado.
 
 ```
-powershell -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-branch-push-policy.ps1 -RepoPath <repo> [-Mode allow|ask]
+pwsh -NoProfile -File ./install-branch-push-policy.ps1 -RepoPath <repo> [-Mode allow|ask]
 ```
 
 - **Para el operador, no para una sesion de IA**: el harness le bloquea al

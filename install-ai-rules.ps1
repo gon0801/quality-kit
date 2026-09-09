@@ -6,7 +6,7 @@
 # files are exactly the kind of global AI configuration an assistant's own
 # permission system should not be touching on its own behalf.
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\install-ai-rules.ps1
+#   pwsh -NoProfile -File ./install-ai-rules.ps1
 #
 # Idempotent: running it again just refreshes the same marker-guarded
 # block, never duplicates it. Takes a timestamped backup of each file
@@ -18,16 +18,31 @@
 # them and it targets your real ~/.claude, ~/.codex, ~/.kimi-code.
 
 param(
-    [string]$ClaudeMdPath = (Join-Path $env:USERPROFILE '.claude\CLAUDE.md'),
-    [string]$CodexAgentsPath = (Join-Path $env:USERPROFILE '.codex\AGENTS.md'),
-    [string]$KimiAgentsPath = (Join-Path $env:USERPROFILE '.kimi-code\AGENTS.md'),
+    [string]$ClaudeMdPath = '',
+    [string]$CodexAgentsPath = '',
+    [string]$KimiAgentsPath = '',
     # Kilo Code (VSCode) lee ~/.config/kilo/AGENTS.md como instrucciones
     # globales (doc oficial) -- cubre a GLM y cualquier modelo usado via Kilo.
-    [string]$KiloAgentsPath = (Join-Path $env:USERPROFILE '.config\kilo\AGENTS.md')
+    [string]$KiloAgentsPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$QualityKitDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+function Get-QualityKitUserHome {
+    if ($env:QUALITY_KIT_USER_HOME) { return $env:QUALITY_KIT_USER_HOME }
+    $homePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ($homePath) { return $homePath }
+    if ($env:HOME) { return $env:HOME }
+    throw 'No se pudo resolver el directorio personal del usuario.'
+}
+
+$UserHome = Get-QualityKitUserHome
+if (-not $ClaudeMdPath) { $ClaudeMdPath = Join-Path $UserHome '.claude/CLAUDE.md' }
+if (-not $CodexAgentsPath) { $CodexAgentsPath = Join-Path $UserHome '.codex/AGENTS.md' }
+if (-not $KimiAgentsPath) { $KimiAgentsPath = Join-Path $UserHome '.kimi-code/AGENTS.md' }
+if (-not $KiloAgentsPath) { $KiloAgentsPath = Join-Path $UserHome '.config/kilo/AGENTS.md' }
 
 $StartMarker = '<!-- >>> QUALITY-KIT REGLAS DE CALIDAD START -- managed by quality-kit''s install-ai-rules.ps1 / uninstall-ai-rules.ps1. Do not hand-edit between these markers. -->'
 $EndMarker = '<!-- >>> QUALITY-KIT REGLAS DE CALIDAD END -->'
@@ -40,11 +55,14 @@ $SectionBody = @'
 
 1. Si el repo tiene candados de commit (pre-commit), correlos antes de dar por terminado -- JAMAS uses --no-verify ni los saltees; si algo falla, se arregla, no se esquiva.
 2. Cada bug que arreglas incluye, en el mismo cambio, una prueba que lo habria atrapado.
-3. Para cambios delicados, sugiere una revision cruzada con otra IA: C:\Users\ehven\quality-kit\cross-review.ps1
+3. Para cambios delicados, sugiere una revision cruzada con otra IA: __CROSS_REVIEW__
    TOPE DURO: maximo 1 ronda; una segunda SOLO si la primera hallo severidad alta; JAMAS una tercera (los hallazgos residuales se declaran en el spec/PR, no se re-revisan). Cada ronda cuesta ~100-150k tokens.
-4. Si el repo no tiene kit de calidad todavia, sugiere correrlo una vez: C:\Users\ehven\quality-kit\init-repo.ps1 (no insistas si dice que no).
-5. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con C:\Users\ehven\quality-kit\install-repo-hygiene.ps1 -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
+4. Si el repo no tiene kit de calidad todavia, sugiere correrlo una vez: __INIT_REPO__ (no insistas si dice que no).
+5. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con __REPO_HYGIENE__ -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
 '@
+$SectionBody = $SectionBody.Replace('__CROSS_REVIEW__', (Join-Path $QualityKitDir 'cross-review.ps1'))
+$SectionBody = $SectionBody.Replace('__INIT_REPO__', (Join-Path $QualityKitDir 'init-repo.ps1'))
+$SectionBody = $SectionBody.Replace('__REPO_HYGIENE__', (Join-Path $QualityKitDir 'install-repo-hygiene.ps1'))
 
 function Write-Utf8NoBomFile {
     param([string]$Path, [string]$Content)

@@ -76,9 +76,9 @@
   Advisory puro: nunca mueve el exit code.
 
   USO
-    powershell -ExecutionPolicy Bypass -File saikit-gate-heal.ps1
-    powershell -ExecutionPolicy Bypass -File saikit-gate-heal.ps1 -Check
-    powershell -ExecutionPolicy Bypass -File saikit-gate-heal.ps1 -RegistrationCheck <path>
+    pwsh -NoProfile -File ./saikit-gate-heal.ps1
+    pwsh -NoProfile -File ./saikit-gate-heal.ps1 -Check
+    pwsh -NoProfile -File ./saikit-gate-heal.ps1 -RegistrationCheck <path>
 #>
 [CmdletBinding()]
 param(
@@ -98,6 +98,16 @@ param(
 
 # Fail-open: este script jamas debe tumbar el arranque de una sesion.
 $ErrorActionPreference = 'Continue'
+
+function Get-QualityKitUserHome {
+    if ($env:QUALITY_KIT_USER_HOME) { return $env:QUALITY_KIT_USER_HOME }
+    $homePath = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ($homePath) { return $homePath }
+    if ($env:HOME) { return $env:HOME }
+    return ''
+}
+
+$UserHome = Get-QualityKitUserHome
 
 $MARKER = 'SAIKIT-SENTINEL-GATE v1'
 
@@ -671,7 +681,7 @@ function Invoke-RegistrationCheck {
         Write-Host "[i] SummonAI Kit: registro del hook: unknown - $porQue (no se afirma que el registro falte: no se pudo mirar)." -ForegroundColor DarkGray
     }
 
-    $claudeDir = Join-Path $env:USERPROFILE '.claude'
+    $claudeDir = Join-Path $UserHome '.claude'
     $settings = Join-Path $claudeDir 'settings.json'
     $localSettings = Join-Path $claudeDir 'settings.local.json'
 
@@ -687,7 +697,7 @@ function Invoke-RegistrationCheck {
     if (-not $checker) {
         # 1) junto al hook, si alguna vez se instala ahi; 2) el repo que lo
         # mantiene. La env var existe para no clavar la ruta de una maquina.
-        $repo = if ($env:SAIKIT_CLAUDE_REPO) { $env:SAIKIT_CLAUDE_REPO } else { 'C:\dev\summonaikit-claude' }
+        $repo = if ($env:SAIKIT_CLAUDE_REPO) { $env:SAIKIT_CLAUDE_REPO } else { Join-Path $UserHome 'dev/summonaikit-claude' }
         foreach ($c in @(
             (Join-Path $claudeDir 'hooks\check-hook-registration.sh'),
             (Join-Path $repo 'tools\check-hook-registration.sh')
@@ -708,10 +718,12 @@ function Invoke-RegistrationCheck {
     if ($null -ne $viaPath) {
         $bash = $viaPath.Source
     } else {
-        foreach ($c in @(
-            (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
-            (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
-        )) {
+        $fixedBashCandidates = @()
+        if ($env:ProgramFiles) {
+            $fixedBashCandidates += (Join-Path $env:ProgramFiles 'Git\bin\bash.exe')
+            $fixedBashCandidates += (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+        }
+        foreach ($c in $fixedBashCandidates) {
             if (Test-Path -LiteralPath $c) { $bash = $c; break }
         }
     }
@@ -778,10 +790,11 @@ function Invoke-RegistrationCheck {
             # Cerrarlo del todo pedia Job Objects via P/Invoke, y ese costo no
             # se paga en un script que corre en cada arranque para cubrir un
             # cuelgue de un chequeo que tarda menos de un segundo.
-            try {
-                & taskkill.exe /T /F /PID $proc.Id 2>&1 | Out-Null
+            if ($env:OS -eq 'Windows_NT') {
+                try { & taskkill.exe /T /F /PID $proc.Id 2>&1 | Out-Null } catch { }
+            } else {
+                try { $proc.Kill($true) } catch { }
             }
-            catch { }
             if (-not $proc.HasExited) {
                 try { $proc.Kill() } catch { }
             }
@@ -813,13 +826,13 @@ function Invoke-RegistrationCheck {
 # no-escritura y elimina la superficie de doble escritor en cada SessionStart.
 # .codex / .cursor / .agents SI siguen parcheandose por anclas.
 $targets = @('.codex', '.cursor', '.agents') |
-    ForEach-Object { Join-Path $env:USERPROFILE (Join-Path $_ 'hooks\summonaikit-harness.sh') }
+    ForEach-Object { Join-Path $UserHome (Join-Path $_ 'hooks/summonaikit-harness.sh') }
 
 $results = @()
 $skippedOwned = @()
 
 foreach ($path in $targets) {
-    $short = $path.Replace($env:USERPROFILE, '~')
+    $short = $path.Replace($UserHome, '~')
 
     if (-not (Test-Path $path)) {
         $results += [pscustomobject]@{ hook = $short; sentinel = 'no-instalado'; reviewnotice = 'no-instalado' }

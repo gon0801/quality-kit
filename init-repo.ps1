@@ -5,7 +5,7 @@
 # docs) inside a single repository. Run it from inside the repo you want to
 # protect:
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\ehven\quality-kit\init-repo.ps1
+#   pwsh -NoProfile -File ./init-repo.ps1
 #
 # Idempotent: running it again re-checks everything and only changes what
 # needs changing. Never touches a pre-existing, non-quality-kit config file
@@ -45,6 +45,16 @@ $WorkflowMarker = 'Generado por quality-kit'
 $PythonRunnerMarker = 'QUALITY-KIT PYTHON RUNNER'
 $CalidadStartMarker = '<!-- >>> QUALITY-KIT CALIDAD SECTION START -- managed by quality-kit''s init-repo.ps1. Do not hand-edit between these markers; re-running init-repo.ps1 will refresh this block cleanly. -->'
 $CalidadEndMarker = '<!-- >>> QUALITY-KIT CALIDAD SECTION END -->'
+
+function Get-CurrentPowerShellExe {
+    $current = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    if ($current -and ((Split-Path -Leaf $current) -match '^(pwsh|powershell)(\.exe)?$')) { return $current }
+    foreach ($name in @('pwsh', 'powershell')) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($null -ne $command) { return $command.Source }
+    }
+    throw 'No se encontro el ejecutable de PowerShell actual.'
+}
 
 # Directories a recursive Python-file search must never descend into: they
 # either aren't the repo's own code (dependencies, virtualenvs) or aren't
@@ -126,10 +136,11 @@ function Get-PythonExe {
 function Get-BashExe {
     $viaPath = Get-Command bash -ErrorAction SilentlyContinue
     if ($null -ne $viaPath) { return $viaPath.Source }
-    $fixedCandidates = @(
-        (Join-Path $env:ProgramFiles 'Git\bin\bash.exe'),
-        (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
-    )
+    $fixedCandidates = @()
+    if ($env:ProgramFiles) {
+        $fixedCandidates += (Join-Path $env:ProgramFiles 'Git\bin\bash.exe')
+        $fixedCandidates += (Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')
+    }
     foreach ($c in $fixedCandidates) {
         if (Test-Path -LiteralPath $c) { return $c }
     }
@@ -1144,7 +1155,8 @@ if (-not (Test-Path -LiteralPath $policyScript)) {
     Write-Host '==> [!] Falta install-branch-push-policy.ps1 en el kit -- politica de push no instalada.'
     $policyOutcome = 'no instalada (kit incompleto)'
 } elseif ($hasGithubRemote -and $hasCiNet) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $policyScript -RepoPath $RepoPath -Mode allow
+    $powerShellExe = Get-CurrentPowerShellExe
+    & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $policyScript -RepoPath $RepoPath -Mode allow
     if ($LASTEXITCODE -eq 0) {
         $policyOutcome = 'allow (red armada: pre-commit + CI)'
     } else {

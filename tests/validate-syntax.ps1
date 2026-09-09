@@ -1,17 +1,6 @@
 $qualityKitDir = Split-Path -Parent $PSScriptRoot
-$files = @(
-    (Join-Path $qualityKitDir 'init-repo.ps1'),
-    (Join-Path $qualityKitDir 'heal-repo.ps1'),
-    (Join-Path $qualityKitDir 'cross-review.ps1'),
-    (Join-Path $qualityKitDir 'install-ai-rules.ps1'),
-    (Join-Path $qualityKitDir 'uninstall-ai-rules.ps1'),
-    (Join-Path $qualityKitDir 'install-docs-groom.ps1'),
-    (Join-Path $qualityKitDir 'uninstall-docs-groom.ps1'),
-    # Faltaba, y es el unico script del kit que corre en CADA SessionStart: un
-    # error de sintaxis aca se descubre en el arranque siguiente, no aca.
-    (Join-Path $qualityKitDir 'saikit-gate-heal.ps1'),
-    (Join-Path $qualityKitDir 'tests\run-tests.ps1')
-)
+$files = @(Get-ChildItem -LiteralPath $qualityKitDir -Filter '*.ps1' -File | ForEach-Object { $_.FullName })
+$files += (Join-Path $qualityKitDir 'tests/run-tests.ps1')
 $hadError = $false
 foreach ($f in $files) {
     $errors = $null
