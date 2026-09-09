@@ -308,7 +308,8 @@ $customWorkflow = (Read-TextFile -Path (Join-Path $QualityKitDir 'templates\qual
 Write-Utf8NoBomFile -Path $pyWorkflowPath -Content $customWorkflow
 $r1b = Invoke-InitRepo -RepoPath $pyRepo
 Assert-True ($r1b.ExitCode -eq 0) 'second init-repo.ps1 run also exits 0' "exit=$($r1b.ExitCode)"
-Assert-True ($r1b.Stdout -match 'generado por quality-kit pero fue modificado') 'a customized quality-kit workflow is recognized and reported instead of overwritten' "stdout=$($r1b.Stdout)"
+Assert-True ($r1b.Stdout -match 'plantilla actual') 'a customized or stale kit workflow is recognized (old template vs hand edit) and not overwritten' "stdout=$($r1b.Stdout)"
+Assert-True ($r1b.Stdout -match 'borralo') 'the skip message tells how to adopt the new template (delete and re-run)' "stdout=$($r1b.Stdout)"
 Assert-True ((Read-TextFile -Path $pyWorkflowPath) -eq $customWorkflow) 'a customized quality-kit workflow is preserved byte-for-byte'
 $pyClaudeMdAfter2 = Read-TextFile -Path (Join-Path $pyRepo 'CLAUDE.md')
 $markerCount = ([regex]::Matches($pyClaudeMdAfter2, [regex]::Escape('QUALITY-KIT CALIDAD SECTION START'))).Count
@@ -2486,6 +2487,8 @@ Assert-True ($ciShardYaml -match '(?m)^  gate:') 'an aggregator job named gate i
 Assert-True ($ciShardYaml -match 'if: always\(\)') 'the gate job has if: always() so a failed shard cannot skip the lock'
 Assert-True ($ciShardYaml -match 'needs: \[suite\]') 'the gate job aggregates the suite job'
 Assert-True ($ciShardYaml -notmatch '__STRATEGY_BLOCK__|__GATE_JOB__|__TIMEOUT_MINUTES__') 'no template placeholder survives in the sharded yaml'
+Assert-True ($rCiShards.Stdout -match 'DECLARANDOLOS') '-Shards without -EnvVar still reminds about DECLARED skips for Windows-bound tests' "stdout=$($rCiShards.Stdout)"
+Assert-True ($rCiShards.Stdout -notmatch 'Variables de entorno del job:') '-Shards without -EnvVar does not print an empty env-var list' "stdout=$($rCiShards.Stdout)"
 
 $ciShardNo = New-FakeGitRepo -Name 'fake-ci-linux-shards-no'
 New-Item -ItemType Directory -Path (Join-Path $ciShardNo 'tests') -Force | Out-Null
@@ -2504,6 +2507,18 @@ $rCiShardKeep2 = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptA
 Assert-True ($rCiShardKeep2.ExitCode -eq 0) 'a re-run WITHOUT -Shards on an already-sharded workflow exits 0' "exit=$($rCiShardKeep2.ExitCode) stdout=$($rCiShardKeep2.Stdout)"
 $ciShardKeepYaml = Read-TextFile -Path (Join-Path $ciShardKeep '.github\workflows\suite-linux.yml')
 Assert-True ($ciShardKeepYaml -match [regex]::Escape("shard: ['1/4', '2/4', '3/4', '4/4']")) 're-running without -Shards preserves the existing 4-shard matrix (does not silently collapse to one job)'
+
+$ciShardForeign = New-FakeGitRepo -Name 'fake-ci-linux-shards-foreign'
+New-Item -ItemType Directory -Path (Join-Path $ciShardForeign 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciShardForeign 'tests\run.sh') -Content "#!/bin/bash`nexit 0`n"
+$ciShardForeignDir = Join-Path $ciShardForeign '.github\workflows'
+New-Item -ItemType Directory -Path $ciShardForeignDir -Force | Out-Null
+$ciShardForeignYaml = "name: Mi workflow propio`non: [push]`n"
+Write-Utf8NoBomFile -Path (Join-Path $ciShardForeignDir 'suite-linux.yml') -Content $ciShardForeignYaml
+$rCiShardForeign = Invoke-ScriptCapture -ScriptPath $InstallCiLinuxScript -ScriptArgs @('-RepoPath', $ciShardForeign, '-Shards', '4')
+Assert-True ($rCiShardForeign.ExitCode -ne 0) '-Shards 4 on a foreign suite-linux.yml is refused' "exit=$($rCiShardForeign.ExitCode)"
+Assert-True ($rCiShardForeign.Stdout -match 'NO fue generado por quality-kit') 'the refusal names the foreign workflow, not SAIKIT_SHARD, when the file is not ours' "stdout=$($rCiShardForeign.Stdout)"
+Assert-True ((Read-TextFile -Path (Join-Path $ciShardForeignDir 'suite-linux.yml')) -eq $ciShardForeignYaml) 'the foreign workflow stays byte-for-byte untouched even with -Shards 4'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 10: quality.yml paralelo (pytest -n auto, opt-out, jest shard, gate) ==='
@@ -2532,6 +2547,7 @@ Assert-True ($ciPyParYaml -match 'sale 0') 'if no checkers exist the gate job de
 Assert-True ($ciPyParYaml -match '\*docs\*|\*ledger\*|\*context\*') 'the gate job only runs docs/ledger checkers, not every tools/check-*.sh (check-secrets.sh without args is exit 2)'
 Assert-True ($ciPyParYaml -match 'python3 ') 'the gate job invokes python3, which exists on ubuntu-latest without extra setup'
 Assert-True ($ciPyParYaml -notmatch '(?m)^\s+python "') 'the gate job does not call bare python (often missing on ubuntu-latest)'
+Assert-True ($ciPyParYaml -match 'stdlib') 'the gate job documents the stdlib-only / no-extra-deps contract for docs/ledger checkers'
 Assert-True ($ciPyParYaml -notmatch 'paths-ignore|paths:') 'the battery is NOT skipped by change type (no path filters)'
 Assert-True ($ciPyParYaml -notmatch '__PYTEST_CMD__|__NODE_IN_QUALITY_JOB__|__NODE_SHARD_JOB__|__GATE_NEEDS__|__GATE_RESULTS_ENV__|__GATE_RESULTS_FOR__') 'no quality.yml placeholder survives'
 Assert-True ($rCiPyPar.Stdout -match 'CI ya corre la bateria completa') 'pytest -n auto still counts as CI running the full battery (pre-push stays smoke)' "stdout=$($rCiPyPar.Stdout)"
@@ -2572,6 +2588,7 @@ Assert-True ($ciJestYaml -match '(?m)^  quality-node:') 'jest gets a dedicated q
 Assert-True ($ciJestYaml -match 'fail-fast: false') 'the jest shard matrix has fail-fast: false'
 Assert-True ($ciJestYaml -match 'if: always\(\)') 'jest workflow gate has if: always()'
 Assert-True ($ciJestYaml -match 'quality-node') 'the gate aggregates quality-node as well as quality'
+Assert-True ($ciJestYaml -match 'npm install') 'quality-node falls back to npm install when there is no package-lock.json (yarn/pnpm/no lockfile)'
 
 $ciNoJest = New-FakeGitRepo -Name 'fake-ci-node-noshard'
 $noJestPkg = '{"name":"fake-ci-node-noshard","version":"1.0.0","scripts":{"test":"node --test"}}'
@@ -2621,6 +2638,32 @@ $rNAutoDetect = Invoke-InitRepo -RepoPath $ciNAutoDetect
 Assert-True ($rNAutoDetect.ExitCode -eq 0) 'init-repo.ps1 exits 0 when an existing quality.yml already has pytest -n auto -q' "exit=$($rNAutoDetect.ExitCode) stderr=$($rNAutoDetect.Stderr)"
 $nAutoConfig = Read-TextFile -Path (Join-Path $ciNAutoDetect '.pre-commit-config.yaml')
 Assert-True ($nAutoConfig -match '--collect-only') 'pytest -n auto -q in an existing workflow still counts as the full battery (auto is not a path)' "config=$nAutoConfig stdout=$($rNAutoDetect.Stdout)"
+
+$ciFlagVal = New-FakeGitRepo -Name 'fake-ci-pytest-flag-value'
+Write-Utf8NoBomFile -Path (Join-Path $ciFlagVal 'pyproject.toml') -Content "[project]`nname = ""fake-ci-pytest-flag-value""`nversion = ""0.1.0""`n"
+New-Item -ItemType Directory -Path (Join-Path $ciFlagVal 'tests') -Force | Out-Null
+Write-Utf8NoBomFile -Path (Join-Path $ciFlagVal 'tests\test_sample.py') -Content "def test_ok():`n    assert 1 + 1 == 2`n"
+Add-FakeGithubRemote -RepoPath $ciFlagVal -Slug 'fake-ci-pytest-flag-value'
+$flagValWfDir = Join-Path $ciFlagVal '.github\workflows'
+New-Item -ItemType Directory -Path $flagValWfDir -Force | Out-Null
+$flagValYaml = @"
+# Generado por quality-kit (init-repo.ps1)
+name: Quality
+on: [push]
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Python tests
+        run: |
+          pip install pytest
+          pytest -c pytest.ini -q
+"@
+Write-Utf8NoBomFile -Path (Join-Path $flagValWfDir 'quality.yml') -Content $flagValYaml
+$rFlagVal = Invoke-InitRepo -RepoPath $ciFlagVal
+Assert-True ($rFlagVal.ExitCode -eq 0) 'init-repo.ps1 exits 0 when CI runs pytest -c pytest.ini -q' "exit=$($rFlagVal.ExitCode) stderr=$($rFlagVal.Stderr)"
+$flagValConfig = Read-TextFile -Path (Join-Path $ciFlagVal '.pre-commit-config.yaml')
+Assert-True ($flagValConfig -match '--collect-only') 'pytest -c pytest.ini -q still counts as the full battery (the config path is the value of -c, not a test path)' "config=$flagValConfig stdout=$($rFlagVal.Stdout)"
 
 Write-Host ''
 Write-Host "=== SUMMARY: $script:PassCount passed, $script:FailCount failed ==="

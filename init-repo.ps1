@@ -567,11 +567,12 @@ function Test-CiRunsFullPytest {
             # ACOTADA por filtro (-k/-m/--deselect/--last-failed) tampoco es la
             # bateria: corre un subconjunto (hallazgo Greptile PR #3).
             if ($despues -match '(^|\s)(-k|-m|--deselect|--lf|--last-failed|--ignore)(\s|=)') { continue }
-            # pytest-xdist: `-n auto` / `--numprocesses=auto` -- `auto` no es un
-            # path, es el valor de la flag. Sin esto, `-n auto` se leia como
-            # pytest acotado a la ruta "auto" y CI NO contaba como bateria
-            # completa (el pre-push volvia a cobrarla en local).
-            $despues = [regex]::Replace($despues, '(^|\s)(-n|--numprocesses)(\s+|=)\S+', ' ')
+            # Flags cuyo SIGUIENTE token es valor, no un path. Sin esto,
+            # `pytest -n auto` / `pytest -c pytest.ini` se leian como pytest
+            # acotado a la ruta "auto"/"pytest.ini" y CI NO contaba como
+            # bateria completa (el pre-push volvia a cobrarla en local).
+            $pytestFlagsConValor = '(?:-(?:n|c|p|o|W)|--(?:numprocesses|config|maxfail|junitxml|rootdir|basetemp|override-ini|tb|color|durations|confcutdir|import-mode))'
+            $despues = [regex]::Replace($despues, '(^|\s)' + $pytestFlagsConValor + '(\s+|=)\S+', ' ')
             # ACOTADA por ruta: cualquier argumento posicional (no-opcion) es un
             # path o nodeid -- `pytest tests`, `pytest tests/x.py::test` incluidos.
             $args = ($despues -split '\s+') | Where-Object { $_ -ne '' }
@@ -928,8 +929,11 @@ function Get-QualityWorkflowContent {
         with:
           node-version: '20'
       - name: Install Node dependencies
-        if: hashFiles('package-lock.json') != ''
-        run: npm ci
+        if: hashFiles('package.json') != ''
+        run: |
+          if [ -f package-lock.json ]; then npm ci
+          else npm install
+          fi
       - name: Run Node tests (shard)
         run: npm test -- --shard=${{ matrix.shard }}
 '@
@@ -964,7 +968,7 @@ function Copy-QualityWorkflowIfSafe {
             return $false
         }
         if ($null -ne $existing -and $existing -ne $generated) {
-            Write-Host "==> .github\workflows\quality.yml fue generado por quality-kit pero fue modificado -- no lo toco."
+            Write-Host "==> .github\workflows\quality.yml fue generado por quality-kit pero ya no coincide con la plantilla actual (edicion o plantilla vieja) -- no lo toco. Para adoptar la plantilla nueva, borralo y re-corre init-repo.ps1."
             return $false
         }
     }

@@ -415,7 +415,8 @@ candado). Nunca se recorta ni se saltea por tipo de cambio. Si un job pasa
 de ~10 min se shardea: bash `SAIKIT_SHARD=i/N`, pytest `-n auto`
 (pytest-xdist; opt-out `QUALITY_KIT_PYTEST_SERIAL=1` al correr
 `init-repo.ps1`), jest/vitest `--shard`. Los checks que leen docs o ledger
-reales van en un job `gate` propio de segundos. Carril: docs/chore/cierre =
+reales van en un job `gate` propio de segundos (los checkers corren sin
+args y sin deps extra: solo stdlib / bash). Carril: docs/chore/cierre =
 fast (bots + lead); codigo = gate (+ reviewer); medicion viva/release = +
 cross-review. Los cierres de ledger de un bloque van en un solo PR.
 
@@ -429,8 +430,9 @@ pwsh -NoProfile -File ./new-repo.ps1 -RepoPath <repo>
 `install-ai-rules.ps1` lo corre el operador (toca los archivos globales de
 IA). `new-repo.ps1` refresca la seccion Calidad del repo. Suites bash:
 `install-ci-linux.ps1 -RepoPath <repo> -Shards N` si el `run.sh` ya honra
-`SAIKIT_SHARD`. Un `quality.yml` generado por el kit y despues editado no
-se pisa; para adoptar la plantilla nueva, borralo y re-corre `new-repo.ps1`.
+`SAIKIT_SHARD`. Un `quality.yml` generado por el kit que ya no coincide con
+la plantilla actual (edicion o plantilla vieja) no se pisa; para adoptar
+la plantilla nueva, borralo y re-corre `new-repo.ps1`.
 
 ## Politica de push a ramas protegidas -- `install-branch-push-policy.ps1`
 
