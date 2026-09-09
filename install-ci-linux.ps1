@@ -20,7 +20,7 @@
 # Uso:
 #   pwsh -NoProfile -File ./install-ci-linux.ps1 -RepoPath <repo> `
 #       [-TestEntry tests/run.sh] [-TimeoutMinutes 30] `
-#       [-EnvVar "SAIKIT_CI_LINUX=1,OTRA=valor"]
+#       [-EnvVar "SAIKIT_CI_LINUX=1,OTRA=valor"] [-Shards N]
 #
 # Idempotente: re-correrlo refresca el workflow si lo genero el kit; si el
 # repo tiene un suite-linux.yml propio (sin marca), se respeta y no se toca.
@@ -34,7 +34,12 @@ param(
     # workflow que GitHub Actions rechaza; 360 es el tope de un job hosted.
     [ValidateRange(1, 360)]
     [int]$TimeoutMinutes = 30,
-    [string[]]$EnvVar = @()
+    [string[]]$EnvVar = @(),
+    # 1 = un job como hoy. >=2 = matrix 1/N..N/N con SAIKIT_SHARD y job
+    # agregador `gate`. El runner tiene que mencionar SAIKIT_SHARD o se
+    # rehusa (no dejar un workflow que falla en cada push).
+    [ValidateRange(1, 32)]
+    [int]$Shards = 1
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,21 +82,59 @@ if (-not (Test-Path -LiteralPath $entryLocal -PathType Leaf)) {
     exit 1
 }
 
-# --- 2. Validar y armar el bloque env ---------------------------------------
-# Cada -EnvVar es NOMBRE=valor. Se acepta ademas UNA lista separada por comas
-# ('A=1,B=2') porque invocado con `powershell -File` un parametro nombrado no
-# se puede repetir y las comas llegan como parte de un solo string (limite
-# conocido: un VALOR con coma no se puede pasar por esa via). El valor va al
-# yaml entre comillas simples (la unica forma segura de citar en YAML sin
-# interpretar nada).
+# EnvVar se valida ANTES del workflow ajeno: un -EnvVar malformado tiene
+# que fallar con NOMBRE=valor aunque el yaml destino no sea nuestro.
 $envPairs = @()
 foreach ($raw in $EnvVar) { $envPairs += ($raw -split ',') }
-$envLines = @()
 foreach ($pair in $envPairs) {
     if ($pair -notmatch '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
         Write-Host "==> [X] -EnvVar '$pair' no tiene forma NOMBRE=valor -- no se escribio nada."
         exit 1
     }
+}
+
+# Tres estados sobre el destino: un suite-linux.yml AJENO se respeta ANTES
+# de validar SAIKIT_SHARD, para no reportar "falta SAIKIT_SHARD" cuando la
+# razon real es que el archivo no es nuestro.
+$workflowDir = Join-Path $RepoPath '.github\workflows'
+$workflowPath = Join-Path $workflowDir 'suite-linux.yml'
+$existing = Read-TextFile -Path $workflowPath
+if ($null -ne $existing -and $existing -notmatch [regex]::Escape($WorkflowMarker)) {
+    Write-Host "==> Ya existe .github\workflows\suite-linux.yml y NO fue generado por quality-kit -- no lo toco."
+    exit 1
+}
+
+# Si el workflow ya esta shardeado y esta corrida NO paso -Shards, conservar
+# N: un refresh sin el flag no debe colapsar la matrix a un job en silencio.
+if (-not $PSBoundParameters.ContainsKey('Shards') -and $null -ne $existing -and $existing -match [regex]::Escape($WorkflowMarker)) {
+    if ($existing -match "shard: \['1/(\d+)'") {
+        $Shards = [int]$Matches[1]
+        Write-Host "==> Conservo -Shards $Shards del workflow existente (pasa -Shards N para cambiarlo)."
+    }
+}
+if ($Shards -gt 1) {
+    $entryText = Read-TextFile -Path $entryLocal
+    if ($null -eq $entryText -or $entryText -notmatch 'SAIKIT_SHARD') {
+        Write-Host "==> [X] -Shards $Shards requiere que $TestEntry mencione SAIKIT_SHARD (forma i/N). Sin eso el workflow falla en cada push -- no lo escribo."
+        exit 1
+    }
+}
+
+# --- 2. Armar el bloque env -------------------------------------------------
+# Cada -EnvVar es NOMBRE=valor (ya validado arriba). Se acepta ademas UNA
+# lista separada por comas ('A=1,B=2') porque invocado con `powershell -File`
+# un parametro nombrado no se puede repetir. El valor va al yaml entre
+# comillas simples (la unica forma segura de citar en YAML sin interpretar
+# nada).
+$envLines = @()
+if ($Shards -gt 1) {
+    # SAIKIT_SHARD va sin comillas: es una expresion de GitHub, no un string.
+    # (GitHub interpola ${{ }} tambien entre comillas; la forma sin citar
+    # es la convencional para expresiones.)
+    $envLines += '          SAIKIT_SHARD: ${{ matrix.shard }}'
+}
+foreach ($pair in $envPairs) {
+    $null = $pair -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
     $name = $Matches[1]
     $value = $Matches[2] -replace "'", "''"
     $envLines += "          ${name}: '$value'"
@@ -100,11 +143,36 @@ $envBlock = ''
 if ($envLines.Count -gt 0) {
     $envBlock = "        env:`n" + (($envLines -join "`n") + "`n")
 }
+$strategyBlock = ''
+$gateJob = ''
+if ($Shards -gt 1) {
+    $shardItems = @()
+    for ($i = 1; $i -le $Shards; $i++) {
+        $shardItems += "'$i/$Shards'"
+    }
+    $strategyBlock = "    strategy:`n      fail-fast: false`n      matrix:`n        shard: [" + ($shardItems -join ', ') + "]`n"
+    $gateJob = @'
+
+  gate:
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [suite]
+    steps:
+      - name: Todos los jobs de calidad en verde
+        env:
+          R_SUITE: ${{ needs.suite.result }}
+        run: |
+          rc=0
+          for par in "suite=$R_SUITE"; do
+            printf '%s\n' "$par"
+            case "$par" in *=success) ;; *) rc=1 ;; esac
+          done
+          [ "$rc" -eq 0 ] || { echo "gate: algun job de calidad NO quedo en success" >&2; exit 1; }
+          echo "gate: OK -- todos en success"
+'@
+}
 
 # --- 3. Tres estados sobre el destino ---------------------------------------
-$workflowDir = Join-Path $RepoPath '.github\workflows'
-$workflowPath = Join-Path $workflowDir 'suite-linux.yml'
-$existing = Read-TextFile -Path $workflowPath
 if ($null -ne $existing -and $existing -notmatch [regex]::Escape($WorkflowMarker)) {
     Write-Host "==> Ya existe .github\workflows\suite-linux.yml y NO fue generado por quality-kit -- no lo toco."
     exit 1
@@ -118,6 +186,8 @@ $content = Read-TextFile -Path $TemplatePath
 $content = $content.Replace('__TIMEOUT_MINUTES__', [string]$TimeoutMinutes)
 $content = $content.Replace('__TEST_ENTRY__', $TestEntry)
 $content = $content.Replace('__ENV_BLOCK__', $envBlock)
+$content = $content.Replace('__STRATEGY_BLOCK__', $strategyBlock)
+$content = $content.Replace('__GATE_JOB__', $gateJob)
 
 if ($null -ne $existing -and $existing -eq $content) {
     Write-Host '==> [OK] .github\workflows\suite-linux.yml ya esta al dia -- sin cambios.'
@@ -127,8 +197,11 @@ if (-not (Test-Path -LiteralPath $workflowDir)) {
     New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
 }
 [System.IO.File]::WriteAllText($workflowPath, $content, $Utf8NoBom)
-Write-Host "==> [OK] Escribi .github\workflows\suite-linux.yml (entry: $TestEntry, timeout: $TimeoutMinutes min)."
-if ($envLines.Count -gt 0) {
+$shardNote = ''
+if ($Shards -gt 1) { $shardNote = ", shards: $Shards" }
+Write-Host "==> [OK] Escribi .github\workflows\suite-linux.yml (entry: $TestEntry, timeout: $TimeoutMinutes min$shardNote)."
+$userEnvVarCount = @($EnvVar | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+if ($userEnvVarCount -gt 0) {
     Write-Host "    Variables de entorno del job: $($EnvVar -join ', ')"
 } else {
     Write-Host '    Sin variables de entorno. Si la suite tiene tests atados a Windows, el runner debe saltearlos DECLARANDOLOS detras de una variable (p.ej. -EnvVar SAIKIT_CI_LINUX=1).'
