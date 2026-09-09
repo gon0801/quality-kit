@@ -105,7 +105,7 @@ function Test-CommandWorks {
 }
 
 function Get-PythonExe {
-    $candidates = @('python', 'py', $KnownGoodPython)
+    $candidates = @('python', 'python3', 'py', $KnownGoodPython)
     foreach ($c in $candidates) {
         if (Test-CommandWorks -Exe $c -TestArgs @('--version')) { return $c }
     }
@@ -142,7 +142,9 @@ function Get-BashExe {
 function Get-RepoPythonExe {
     param([string]$RepoPath)
     $venvCandidates = @(
+        (Join-Path $RepoPath '.venv/bin/python'),
         (Join-Path $RepoPath '.venv\Scripts\python.exe'),
+        (Join-Path $RepoPath 'venv/bin/python'),
         (Join-Path $RepoPath 'venv\Scripts\python.exe')
     )
     foreach ($v in $venvCandidates) {

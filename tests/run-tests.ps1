@@ -261,6 +261,8 @@ Assert-True ($pyConfig -match '(?ms)id:\s*pytest-pre-push.*?language:\s*python')
 Assert-True (Test-Path -LiteralPath (Join-Path $pyRepo 'tools\quality_run_python_tests.py')) 'init-repo installs the managed portable Python runner in the target repo'
 $portableRunner = Read-TextFile -Path (Join-Path $pyRepo 'tools\quality_run_python_tests.py')
 Assert-True ($portableRunner -match 'QUALITY-KIT PYTHON RUNNER') 'the installed portable runner keeps its quality-kit ownership marker'
+Assert-True ((Read-TextFile -Path $InitRepoScript) -match "'python', 'python3', 'py'") 'init-repo can discover the system Python aliases used by Windows, macOS and Linux'
+Assert-True ((Read-TextFile -Path $InitRepoScript) -match [regex]::Escape("'.venv/bin/python'")) 'init-repo validates fresh hooks with a Unix virtualenv when present'
 Assert-True (-not ($pyConfig -match 'eslint-local|prettier-local|npm-test-pre-push')) 'no Node-specific hooks leaked into a pure-Python repo'
 
 Assert-True (Test-Path -LiteralPath (Join-Path $pyRepo '.git\hooks\pre-commit')) 'the real git pre-commit hook was installed'
