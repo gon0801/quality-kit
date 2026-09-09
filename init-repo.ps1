@@ -578,13 +578,8 @@ function Get-FreshEntryCmdForCandidate {
         return 'python tools/quality_run_python_tests.py pytest -x -q'
     }
     if ($null -ne $Candidate.TestsDirInfo.ParentSubdir) {
-        # Mirrors the real hand-fix from the MCP-2 incident exactly: a
-        # nested tests dir (e.g. app\tests) needs a directory change before
-        # running discover, and a pre-commit "repo: local" hook has no
-        # working-directory key of its own -- "bash -c 'cd ... && ...'" is
-        # how the actual fix expressed that, and bash ships with any Git
-        # install (already a hard prerequisite for pre-commit itself), so
-        # it is always available where this runs.
+        # A nested tests dir needs a directory change before discovery.
+        # The portable runner owns that change without depending on bash.
         return "python tools/quality_run_python_tests.py --cwd $($Candidate.TestsDirInfo.ParentSubdir) unittest discover -s $($Candidate.TestsDirInfo.StartDir) -t ."
     }
     return "python tools/quality_run_python_tests.py unittest discover -s $($Candidate.TestsDirInfo.StartDir) -t ."

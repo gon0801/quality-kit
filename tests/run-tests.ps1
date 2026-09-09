@@ -431,7 +431,7 @@ $rRootUnittest = Invoke-InitRepo -RepoPath $rootUnittestRepo
 Assert-True ($rRootUnittest.ExitCode -eq 0) 'init-repo.ps1 exits 0 on a repo with root tests/ using unittest, no pytest config' "exit=$($rRootUnittest.ExitCode) stderr=$($rRootUnittest.Stderr)"
 $rootUnittestYaml = Read-TextFile -Path (Join-Path $rootUnittestRepo '.pre-commit-config.yaml')
 Assert-True ($rootUnittestYaml -match 'unittest-pre-push') 'root tests/ with a real unittest.TestCase and no pytest config selects the unittest runner' "config=$rootUnittestYaml"
-Assert-True ($rootUnittestYaml -match [regex]::Escape('-m unittest discover -s tests -t .')) 'the root-level unittest entry uses "-s tests -t ." with no cd/bash wrapper needed' "config=$rootUnittestYaml"
+Assert-True ($rootUnittestYaml -match [regex]::Escape('quality_run_python_tests.py unittest discover -s tests -t .')) 'the root-level unittest entry uses the portable runner with "-s tests -t ."' "config=$rootUnittestYaml"
 Assert-True (-not ($rootUnittestYaml -match '(?m)^\s*entry:.*bash -c')) 'the root-level case''s actual entry line does NOT use the bash -c cd-into-parent wrapper (that is only for the nested case; the template''s explanatory comment mentions "bash -c" in prose, which is fine -- only the entry: line itself matters here)' "config=$rootUnittestYaml"
 
 Write-Host ''
@@ -447,8 +447,8 @@ $rMcp2Shape = Invoke-InitRepo -RepoPath $mcp2ShapeRepo
 Assert-True ($rMcp2Shape.ExitCode -eq 0) 'init-repo.ps1 exits 0 on the exact MCP-2 shape (app\tests, unittest, no pytest config)' "exit=$($rMcp2Shape.ExitCode) stderr=$($rMcp2Shape.Stderr)"
 $mcp2ShapeYaml = Read-TextFile -Path (Join-Path $mcp2ShapeRepo '.pre-commit-config.yaml')
 Assert-True ($mcp2ShapeYaml -match 'unittest-pre-push') 'the MCP-2 shape (nested app\tests, unittest) selects the unittest runner' "config=$mcp2ShapeYaml"
-Assert-True ($mcp2ShapeYaml -match [regex]::Escape("bash -c 'cd app && ")) 'the nested case cds into the parent subdirectory first, mirroring the real MCP-2 hand-fix' "config=$mcp2ShapeYaml"
-Assert-True ($mcp2ShapeYaml -match [regex]::Escape('-m unittest discover -s tests -t .')) 'the nested case still discovers with -s tests -t . once inside the parent dir' "config=$mcp2ShapeYaml"
+Assert-True ($mcp2ShapeYaml -match [regex]::Escape('--cwd app unittest discover -s tests -t .')) 'the nested case asks the portable runner to enter the parent before discovery' "config=$mcp2ShapeYaml"
+Assert-True ($mcp2ShapeYaml -match [regex]::Escape('unittest discover -s tests -t .')) 'the nested case still discovers with -s tests -t . once inside the parent dir' "config=$mcp2ShapeYaml"
 Assert-True ($rMcp2Shape.Stdout -match 'El runner de pruebas \(unittest\) funciona') 'init-repo.ps1 reports that it validated the unittest runner successfully before installing the hook'
 Assert-True (Test-Path -LiteralPath (Join-Path $mcp2ShapeRepo '.git\hooks\pre-push')) 'the real git pre-push hook was installed for the validated MCP-2 shape'
 
