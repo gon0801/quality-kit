@@ -297,8 +297,13 @@ Assert-True ($hygieneInstaller -match '(?ms)id:\s*context-docs-budget.*?language
 
 Write-Host ''
 Write-Host '=== TEST GROUP 1b: idempotency -- running init-repo.ps1 again changes nothing extra ==='
+$pyWorkflowPath = Join-Path $pyRepo '.github\workflows\quality.yml'
+$customWorkflow = (Read-TextFile -Path $pyWorkflowPath) + "`n# ajuste propio que init-repo debe preservar`n"
+Write-Utf8NoBomFile -Path $pyWorkflowPath -Content $customWorkflow
 $r1b = Invoke-InitRepo -RepoPath $pyRepo
 Assert-True ($r1b.ExitCode -eq 0) 'second init-repo.ps1 run also exits 0' "exit=$($r1b.ExitCode)"
+Assert-True ($r1b.Stdout -match 'generado por quality-kit pero fue modificado') 'a customized quality-kit workflow is recognized and reported instead of overwritten' "stdout=$($r1b.Stdout)"
+Assert-True ((Read-TextFile -Path $pyWorkflowPath) -eq $customWorkflow) 'a customized quality-kit workflow is preserved byte-for-byte'
 $pyClaudeMdAfter2 = Read-TextFile -Path (Join-Path $pyRepo 'CLAUDE.md')
 $markerCount = ([regex]::Matches($pyClaudeMdAfter2, [regex]::Escape('QUALITY-KIT CALIDAD SECTION START'))).Count
 Assert-True ($markerCount -eq 1) 'CLAUDE.md Calidad marker still appears exactly once after a second run (not duplicated)' "count=$markerCount"

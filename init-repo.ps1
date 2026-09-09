@@ -537,10 +537,13 @@ function Test-CiRunsFullPytest {
     if ($tieneManifiesto -and (Test-HasGithubRemote -RepoPath $RepoPath)) {
         if (-not (Test-Path -LiteralPath $nuestroWorkflow)) { return $true }
         $existente = Read-TextFile -Path $nuestroWorkflow
+        $plantilla = Read-TextFile -Path (Join-Path $TemplatesDir 'quality.yml')
         # Un quality.yml AJENO no cuenta aca: no sabemos que corre, y ademas
         # el kit no lo pisa (Copy-QualityWorkflowIfSafe lo respeta). Cae al
-        # analisis literal de abajo, que mira lo que realmente ejecuta.
-        if ($null -ne $existente -and $existente -match [regex]::Escape($WorkflowMarker)) { return $true }
+        # analisis literal de abajo, que mira lo que realmente ejecuta. Un
+        # workflow nuestro pero personalizado tambien cae al analisis literal:
+        # conservar el marker no demuestra que el paso pytest siga intacto.
+        if ($null -ne $existente -and $existente -eq $plantilla) { return $true }
     }
     $workflowsDir = Join-Path $RepoPath '.github\workflows'
     if (-not (Test-Path -LiteralPath $workflowsDir)) { return $false }
@@ -880,17 +883,21 @@ function Copy-QualityWorkflowIfSafe {
     param([string]$RepoPath)
     $workflowDir = Join-Path $RepoPath '.github\workflows'
     $workflowPath = Join-Path $workflowDir 'quality.yml'
+    $templateContent = Read-TextFile -Path (Join-Path $TemplatesDir 'quality.yml')
     if (Test-Path -LiteralPath $workflowPath) {
         $existing = Read-TextFile -Path $workflowPath
         if ($null -ne $existing -and $existing -notmatch [regex]::Escape($WorkflowMarker)) {
             Write-Host "==> Ya existe .github\workflows\quality.yml y NO fue generado por quality-kit -- no lo toco."
             return $false
         }
+        if ($null -ne $existing -and $existing -ne $templateContent) {
+            Write-Host "==> .github\workflows\quality.yml fue generado por quality-kit pero fue modificado -- no lo toco."
+            return $false
+        }
     }
     if (-not (Test-Path -LiteralPath $workflowDir)) {
         New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
     }
-    $templateContent = Read-TextFile -Path (Join-Path $TemplatesDir 'quality.yml')
     Write-Utf8NoBomFile -Path $workflowPath -Content $templateContent
     Write-Host '==> Escribi .github\workflows\quality.yml'
     return $true
