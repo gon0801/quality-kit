@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -44,7 +45,7 @@ class MacosPortabilityTests(unittest.TestCase):
         self.assertIn("windows-latest", source)
         self.assertIn("macos-latest", source)
 
-    @unittest.skipUnless(os.uname().sysname == "Darwin", "prueba especifica de macOS")
+    @unittest.skipUnless(sys.platform == "darwin", "prueba especifica de macOS")
     def test_init_repo_invokes_policy_with_current_pwsh(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             repo = Path(raw_dir) / "repo"
@@ -72,7 +73,7 @@ class MacosPortabilityTests(unittest.TestCase):
             policy = repo / ".claude-code-harness.config.yaml"
             self.assertIn("protected_branch_push: allow", policy.read_text(encoding="utf-8"))
 
-    @unittest.skipUnless(os.uname().sysname == "Darwin", "prueba especifica de macOS")
+    @unittest.skipUnless(sys.platform == "darwin", "prueba especifica de macOS")
     def test_global_rules_use_portable_home_override(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             fake_home = Path(raw_dir)
@@ -90,7 +91,7 @@ class MacosPortabilityTests(unittest.TestCase):
             content = codex_rules.read_text(encoding="utf-8")
             self.assertIn(str(ROOT / "cross-review.ps1"), content)
 
-    @unittest.skipUnless(os.uname().sysname == "Darwin", "prueba especifica de macOS")
+    @unittest.skipUnless(sys.platform == "darwin", "prueba especifica de macOS")
     def test_cross_review_timeout_terminates_descendants(self) -> None:
         with tempfile.TemporaryDirectory() as raw_dir:
             temp = Path(raw_dir)
