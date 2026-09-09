@@ -750,7 +750,7 @@ Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`
 # produce the normal DRY RUN shape (command + prompt + temp diff file).
 $rAuto = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto' -Excluir 'kimi'
 Assert-True ($rAuto.ExitCode -eq 0) '-Con auto -DryRun exits 0' "exit=$($rAuto.ExitCode) stderr=$($rAuto.Stderr)"
-Assert-True ($rAuto.Stdout -match [regex]::Escape('Cadena auto: claude -> grok -> qwen -> codex')) '-Con auto -Excluir kimi announces the chain without the excluded AI'
+Assert-True ($rAuto.Stdout -match [regex]::Escape('Cadena auto: claude -> glm -> grok -> qwen -> codex')) '-Con auto -Excluir kimi announces the current chain without the excluded AI'
 # Only the candidate list BEFORE the '(' matters: the parenthetical
 # "(excluido: kimi, ...)" legitimately names the excluded AI.
 Assert-True ($rAuto.Stdout -notmatch 'Cadena auto:[^(\r\n]*kimi') '-Con auto -Excluir kimi never lists kimi as a candidate'
@@ -761,7 +761,7 @@ Assert-True ($rAuto.Stdout -match 'DRY RUN') '-Con auto -DryRun still announces 
 # auto with no exclusion: full chain, strongest first.
 $rAutoFull = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto'
 Assert-True ($rAutoFull.ExitCode -eq 0) '-Con auto (sin -Excluir) -DryRun exits 0' "exit=$($rAutoFull.ExitCode)"
-Assert-True ($rAutoFull.Stdout -match [regex]::Escape('Cadena auto: claude -> grok -> kimi -> qwen -> codex')) '-Con auto announces the full chain, strongest brain first'
+Assert-True ($rAutoFull.Stdout -match [regex]::Escape('Cadena auto: claude -> glm -> grok -> kimi -> qwen -> codex')) '-Con auto announces the full current chain, strongest brain first'
 
 # self-review guard: asking an AI to review its own change must be refused.
 $rSelf = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'claude' -Excluir 'claude'
@@ -784,8 +784,8 @@ Assert-True ($rGrok.Stdout -match 'read_file') '-Con grok DryRun command allowli
 $rQwen = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'qwen'
 Assert-True ($rQwen.ExitCode -eq 0) '-Con qwen -DryRun exits 0' "exit=$($rQwen.ExitCode) stderr=$($rQwen.Stderr)"
 Assert-True ($rQwen.Stdout -match '(?m)^Comando:.*\s-p\s') '-Con qwen DryRun command uses qwen -p (non-interactive)'
-Assert-True ($rQwen.Stdout -match '--approval-mode plan') '-Con qwen DryRun command uses plan mode (read-only analysis, no edits/shell)'
-Assert-True ($rQwen.Stdout -match '--safe-mode') '-Con qwen DryRun command uses --safe-mode so skills/hooks/MCP cannot hijack the review'
+Assert-True ($rQwen.Stdout -match '(?m)^Comando:.*\s-y\s+-o\s+text') '-Con qwen DryRun auto-approves its read-only tool allowlist and requests text output'
+Assert-True ($rQwen.Stdout -notmatch '--approval-mode plan|--safe-mode') '-Con qwen DryRun omits obsolete flags that either do not exist or disable its tool exclusions'
 
 # exit-3 contract: with NO AI CLI findable on the child's PATH, auto mode
 # must fall all the way through the chain and exit 3 (the harness reads
