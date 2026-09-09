@@ -18,8 +18,8 @@
 # saltar, volvia en cada vuelta de review por mas que se acordara lo
 # contrario (se "corrigio" 5 veces antes de arreglar este archivo).
 #
-# El comando de la linea "entry:" de aca abajo lo arma init-repo.ps1:
-# normalmente "<python> -m pytest -x -q", pero si ya habia un candado de
+# El comando de la linea "entry:" de aca abajo lo arma init-repo.ps1 con
+# el runner portable administrado. Si ya habia un candado de
 # pruebas funcionando de una corrida anterior, se reusa ese comando tal
 # cual (verbatim) en vez de reconstruirlo -- una regeneracion nunca debe
 # reemplazar un candado que ya funciona por otra cosa (ver el propio
@@ -34,6 +34,8 @@
       - id: pytest-pre-push
         name: pytest (pre-push)
         entry: <PYTEST_ENTRY_CMD>
-        language: system
+        # `language: python` garantiza que `python` exista para arrancar el
+        # runner; el runner elige el entorno real del repo en cada maquina.
+        language: python
         pass_filenames: false
         stages: [pre-push]

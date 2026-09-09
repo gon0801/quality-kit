@@ -42,6 +42,7 @@ $TemplatesDir = Join-Path $QualityKitDir 'templates'
 
 $PreCommitConfigMarker = 'QUALITY-KIT MANAGED'
 $WorkflowMarker = 'Generado por quality-kit'
+$PythonRunnerMarker = 'QUALITY-KIT PYTHON RUNNER'
 $CalidadStartMarker = '<!-- >>> QUALITY-KIT CALIDAD SECTION START -- managed by quality-kit''s init-repo.ps1. Do not hand-edit between these markers; re-running init-repo.ps1 will refresh this block cleanly. -->'
 $CalidadEndMarker = '<!-- >>> QUALITY-KIT CALIDAD SECTION END -->'
 
@@ -64,6 +65,25 @@ function Read-TextFile {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
     return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8)
+}
+
+function Copy-PortablePythonRunner {
+    param([string]$RepoPath)
+    $source = Join-Path $TemplatesDir 'quality-run-python-tests.py'
+    $toolsDir = Join-Path $RepoPath 'tools'
+    $target = Join-Path $toolsDir 'quality_run_python_tests.py'
+    if (Test-Path -LiteralPath $target) {
+        $existing = Read-TextFile -Path $target
+        if ($null -eq $existing -or $existing -notmatch [regex]::Escape($PythonRunnerMarker)) {
+            throw "Ya existe $target y no pertenece a quality-kit; no puedo instalar el runner portable sin pisarlo."
+        }
+    }
+    if (-not (Test-Path -LiteralPath $toolsDir)) {
+        New-Item -ItemType Directory -Path $toolsDir -Force | Out-Null
+    }
+    $content = Read-TextFile -Path $source
+    Write-Utf8NoBomFile -Path $target -Content $content
+    Write-Host '==> Runner portable de pruebas Python instalado/refrescado.'
 }
 
 # ------------------------------------------------------------------
@@ -544,16 +564,16 @@ function Test-CiRunsFullPytest {
 # Computes the entry command for a freshly-chosen (not preserved-verbatim)
 # candidate, the same way the main flow used to build it inline.
 function Get-FreshEntryCmdForCandidate {
-    param([PSCustomObject]$Candidate, [string]$PythonExeForHook, [bool]$CiRunsFullSuite = $false)
+    param([PSCustomObject]$Candidate, [bool]$CiRunsFullSuite = $false)
     if ($Candidate.Type -eq 'pytest') {
         if ($CiRunsFullSuite) {
             # Smoke rapido y GENERICO: --collect-only importa todo el arbol de
             # tests y su conftest, asi que caza el error de sintaxis / import
             # roto / conftest reventado (lo que pondria CI en rojo al instante)
             # en segundos, sin correr la bateria que CI ya corre.
-            return "$PythonExeForHook -m pytest -x -q --collect-only"
+            return 'python tools/quality_run_python_tests.py pytest -x -q --collect-only'
         }
-        return "$PythonExeForHook -m pytest -x -q"
+        return 'python tools/quality_run_python_tests.py pytest -x -q'
     }
     if ($null -ne $Candidate.TestsDirInfo.ParentSubdir) {
         # Mirrors the real hand-fix from the MCP-2 incident exactly: a
@@ -563,9 +583,9 @@ function Get-FreshEntryCmdForCandidate {
         # how the actual fix expressed that, and bash ships with any Git
         # install (already a hard prerequisite for pre-commit itself), so
         # it is always available where this runs.
-        return "bash -c 'cd $($Candidate.TestsDirInfo.ParentSubdir) && $PythonExeForHook -m unittest discover -s $($Candidate.TestsDirInfo.StartDir) -t . 2>&1 | tail -5'"
+        return "python tools/quality_run_python_tests.py --cwd $($Candidate.TestsDirInfo.ParentSubdir) unittest discover -s $($Candidate.TestsDirInfo.StartDir) -t ."
     }
-    return "$PythonExeForHook -m unittest discover -s $($Candidate.TestsDirInfo.StartDir) -t ."
+    return "python tools/quality_run_python_tests.py unittest discover -s $($Candidate.TestsDirInfo.StartDir) -t ."
 }
 
 # ------------------------------------------------------------------
@@ -911,6 +931,16 @@ function Get-CalidadSectionBody {
     $lines.Add('Reglas de hierro:')
     $lines.Add('1. Si un candado falla, se arregla el problema real -- JAMAS se usa `--no-verify` ni se saltea un candado.')
     $lines.Add('2. Cada bug arreglado incluye, en el mismo cambio, una prueba que lo habria atrapado.')
+    $lines.Add('')
+    $lines.Add('Flujo de verificacion:')
+    $lines.Add('- Durante la implementacion, corre solo las pruebas focalizadas del comportamiento modificado.')
+    $lines.Add('- Agrupa los hallazgos de revision y corrigelos en una sola ronda por bloque.')
+    $lines.Add('- Ejecuta Ruff y las pruebas focalizadas despues del ultimo cambio del bloque.')
+    $lines.Add('- Ejecuta la bateria completa una sola vez por bloque, sobre el commit final y preferentemente en CI mediante PR.')
+    $lines.Add('- Si CI ya valido tests, Ruff y pre-commit sobre ese SHA, no los repitas localmente.')
+    $lines.Add('- No vuelvas a ejecutar CI si el commit verificado no cambio.')
+    $lines.Add('- Una observacion tardia menor queda pendiente; solo seguridad, datos, reglas innegociables o el comportamiento solicitado reabren el ciclo.')
+    $lines.Add('- Despues del deploy, ejecuta una sola vez el checklist del repo y no repitas evidencia valida sin un cambio que pueda invalidarla.')
     return ($lines -join "`n")
 }
 
@@ -1020,7 +1050,7 @@ if ($detected.Python) {
                     Write-Host '==> CI ya corre la bateria completa de pytest: el candado de pre-push queda RAPIDO (smoke de coleccion) y la bateria se cobra UNA vez, en CI.'
                 }
                 foreach ($candidate in $candidates) {
-                    $entryCmd = Get-FreshEntryCmdForCandidate -Candidate $candidate -PythonExeForHook $pythonExeForHook -CiRunsFullSuite $ciCorreLaSuite
+                    $entryCmd = Get-FreshEntryCmdForCandidate -Candidate $candidate -CiRunsFullSuite $ciCorreLaSuite
                     Write-Host "==> Verificando el runner de pruebas ($($candidate.Type)) antes de instalar el candado de pre-push..."
                     $validation = Test-PythonRunnerValidates -RepoPath $RepoPath -PythonExeForHook $pythonExeForHook -RunnerPlan $candidate
                     if ($validation.Ok) {
@@ -1061,6 +1091,11 @@ if ($detected.Python) {
             }
         }
     }
+}
+
+$portableRunnerNeeded = (($detected.PythonTestRunner -eq 'pytest') -or ($detected.PythonTestRunner -eq 'unittest'))
+if ($portableRunnerNeeded) {
+    Copy-PortablePythonRunner -RepoPath $RepoPath
 }
 
 $built = Build-PreCommitConfigContent -RepoPath $RepoPath -Detected $detected

@@ -54,7 +54,10 @@ Que hace:
     `test` real en `package.json`): corren en **pre-push**, no en cada
     commit -- las pruebas (sobre todo un backtest o una suite grande) son
     demasiado lentas para cada commit chiquito, pero SI tienen que pasar
-    antes de que algo salga del repo hacia afuera.
+    antes de que algo salga del repo hacia afuera. Los hooks de Python usan
+    `tools/quality_run_python_tests.py`: en cada maquina elige `uv`, el
+    virtualenv Unix/Windows o un Python del sistema, sin guardar la ruta de
+    la maquina que genero el YAML.
 - Instala los candados de verdad (`pre-commit install`, y
   `pre-commit install --hook-type pre-push` cuando hay pruebas).
 - Si el repo ya tiene remoto de GitHub, copia el workflow de CI
@@ -62,10 +65,10 @@ Que hace:
   todavia no tiene remoto (tus repos hoy son locales), lo saltea sin decir
   nada raro; el dia que subas el repo a GitHub, volves a correr
   `init-repo.ps1` y ese paso se activa solo.
-- Agrega una seccion corta "Calidad" a `CLAUDE.md` y `AGENTS.md` del repo
-  (los crea si no existen), con los comandos exactos para correr los
-  candados a mano y las dos reglas de hierro (nunca saltear un candado,
-  siempre agregar una prueba de regresion al arreglar un bug).
+- Agrega una seccion "Calidad" a `CLAUDE.md` y `AGENTS.md` del repo
+  (los crea si no existen), con los comandos exactos, las reglas de hierro
+  y el flujo que limita cada bloque a una ronda consolidada de revision,
+  una bateria completa sobre el commit final y un checklist de deploy.
 
 Se puede correr mas de una vez sin problema: nunca pisa una configuracion
 de pre-commit que ya tenias de antes (si detecta que `.pre-commit-config.yaml`

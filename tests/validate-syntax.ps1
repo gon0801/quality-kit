@@ -1,15 +1,16 @@
+$qualityKitDir = Split-Path -Parent $PSScriptRoot
 $files = @(
-    'C:\Users\ehven\quality-kit\init-repo.ps1',
-    'C:\Users\ehven\quality-kit\heal-repo.ps1',
-    'C:\Users\ehven\quality-kit\cross-review.ps1',
-    'C:\Users\ehven\quality-kit\install-ai-rules.ps1',
-    'C:\Users\ehven\quality-kit\uninstall-ai-rules.ps1',
-    'C:\Users\ehven\quality-kit\install-docs-groom.ps1',
-    'C:\Users\ehven\quality-kit\uninstall-docs-groom.ps1',
+    (Join-Path $qualityKitDir 'init-repo.ps1'),
+    (Join-Path $qualityKitDir 'heal-repo.ps1'),
+    (Join-Path $qualityKitDir 'cross-review.ps1'),
+    (Join-Path $qualityKitDir 'install-ai-rules.ps1'),
+    (Join-Path $qualityKitDir 'uninstall-ai-rules.ps1'),
+    (Join-Path $qualityKitDir 'install-docs-groom.ps1'),
+    (Join-Path $qualityKitDir 'uninstall-docs-groom.ps1'),
     # Faltaba, y es el unico script del kit que corre en CADA SessionStart: un
     # error de sintaxis aca se descubre en el arranque siguiente, no aca.
-    'C:\Users\ehven\quality-kit\saikit-gate-heal.ps1',
-    'C:\Users\ehven\quality-kit\tests\run-tests.ps1'
+    (Join-Path $qualityKitDir 'saikit-gate-heal.ps1'),
+    (Join-Path $qualityKitDir 'tests\run-tests.ps1')
 )
 $hadError = $false
 foreach ($f in $files) {

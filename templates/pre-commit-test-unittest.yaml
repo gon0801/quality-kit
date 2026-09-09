@@ -21,6 +21,8 @@
       - id: unittest-pre-push
         name: unittest (pre-push)
         entry: <UNITTEST_ENTRY_CMD>
-        language: system
+        # `language: python` garantiza que `python` exista para arrancar el
+        # runner; el runner elige el entorno real del repo en cada maquina.
+        language: python
         pass_filenames: false
         stages: [pre-push]

@@ -10,11 +10,12 @@
 # capping, and prompt-building code path without ever spawning the CLI.
 
 $ErrorActionPreference = 'Stop'
-$QualityKitDir = 'C:\Users\ehven\quality-kit'
+$QualityKitDir = Split-Path -Parent $PSScriptRoot
 $InitRepoScript = Join-Path $QualityKitDir 'init-repo.ps1'
 $HealRepoScript = Join-Path $QualityKitDir 'heal-repo.ps1'
 $CrossReviewScript = Join-Path $QualityKitDir 'cross-review.ps1'
 $InstallAiRulesScript = Join-Path $QualityKitDir 'install-ai-rules.ps1'
+$InstallRepoHygieneScript = Join-Path $QualityKitDir 'install-repo-hygiene.ps1'
 $UninstallAiRulesScript = Join-Path $QualityKitDir 'uninstall-ai-rules.ps1'
 $InstallDocsGroomScript = Join-Path $QualityKitDir 'install-docs-groom.ps1'
 $UninstallDocsGroomScript = Join-Path $QualityKitDir 'uninstall-docs-groom.ps1'
@@ -254,6 +255,12 @@ Assert-True ($pyConfig -match 'ruff-check') '.pre-commit-config.yaml includes ru
 Assert-True ($pyConfig -match 'ruff-format') '.pre-commit-config.yaml includes ruff-format (Python detected)'
 Assert-True ($pyConfig -match 'pytest-pre-push') '.pre-commit-config.yaml includes the pytest pre-push hook (tests/ detected)'
 Assert-True ($pyConfig -match 'stages: \[pre-push\]') 'the pytest hook is staged for pre-push, not pre-commit'
+Assert-True ($pyConfig -match 'python tools/quality_run_python_tests.py pytest') 'pytest hook uses the managed portable runner instead of a host-specific Python path' "config=$pyConfig"
+Assert-True ($pyConfig -notmatch '\.venv[\\/]Scripts[\\/]python\.exe') 'pytest hook does not persist the Windows virtualenv path of the generating machine' "config=$pyConfig"
+Assert-True ($pyConfig -match '(?ms)id:\s*pytest-pre-push.*?language:\s*python') 'pytest hook receives a cross-platform bootstrap Python from pre-commit' "config=$pyConfig"
+Assert-True (Test-Path -LiteralPath (Join-Path $pyRepo 'tools\quality_run_python_tests.py')) 'init-repo installs the managed portable Python runner in the target repo'
+$portableRunner = Read-TextFile -Path (Join-Path $pyRepo 'tools\quality_run_python_tests.py')
+Assert-True ($portableRunner -match 'QUALITY-KIT PYTHON RUNNER') 'the installed portable runner keeps its quality-kit ownership marker'
 Assert-True (-not ($pyConfig -match 'eslint-local|prettier-local|npm-test-pre-push')) 'no Node-specific hooks leaked into a pure-Python repo'
 
 Assert-True (Test-Path -LiteralPath (Join-Path $pyRepo '.git\hooks\pre-commit')) 'the real git pre-commit hook was installed'
@@ -265,6 +272,12 @@ Assert-True ($null -ne $pyClaudeMd -and $pyClaudeMd -match 'QUALITY-KIT CALIDAD 
 Assert-True ($null -ne $pyAgentsMd -and $pyAgentsMd -match 'QUALITY-KIT CALIDAD SECTION START') 'AGENTS.md was created with the Calidad section'
 Assert-True ($pyClaudeMd -match 'JAMAS') 'the Calidad section states the never-bypass-hooks rule'
 Assert-True ($pyClaudeMd -match 'pytest -x -q') 'the Calidad section documents the exact pytest pre-push command'
+Assert-True ($pyClaudeMd -match 'No vuelvas a ejecutar CI si el commit verificado no cambio') 'the managed Calidad section prevents repeated CI on the same SHA'
+Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
+Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
+
+$hygieneInstaller = Read-TextFile -Path $InstallRepoHygieneScript
+Assert-True ($hygieneInstaller -match '(?ms)id:\s*context-docs-budget.*?language:\s*python') 'repo-hygiene uses pre-commit Python instead of assuming a system `python` alias'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 1b: idempotency -- running init-repo.ps1 again changes nothing extra ==='

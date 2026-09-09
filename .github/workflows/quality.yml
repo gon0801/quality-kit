@@ -1,0 +1,31 @@
+name: Quality
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias del harness
+        run: python -m pip install pre-commit pytest
+      - name: Configurar Git para repos temporales
+        shell: pwsh
+        run: |
+          git config --global user.name "quality-kit-ci"
+          git config --global user.email "quality-kit-ci@example.invalid"
+      - name: Validar sintaxis PowerShell
+        shell: pwsh
+        run: ./tests/validate-syntax.ps1
+      - name: Probar runner portable
+        run: python -m unittest tests/test_quality_run_python_tests.py
+      - name: Ejecutar bateria completa
+        shell: pwsh
+        run: ./tests/run-tests.ps1
