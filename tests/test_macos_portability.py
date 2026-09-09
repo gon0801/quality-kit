@@ -38,6 +38,7 @@ class MacosPortabilityTests(unittest.TestCase):
         self.assertIn("Get-CurrentPowerShellExe", source)
         self.assertIn("[System.IO.Path]::PathSeparator", source)
         self.assertIn("'PATH'", source)
+        self.assertNotIn(r"C:\dev\summonaikit-claude", source)
 
     def test_ci_runs_on_windows_and_macos(self) -> None:
         source = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")

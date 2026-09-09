@@ -1850,8 +1850,8 @@ Assert-True ($rRegD.ExitCode -eq 0) 'a missing checker does not break the sessio
 # repo esta en esta maquina. Si no esta, se avisa y se sigue: la bateria del kit
 # no puede depender de otro repo (misma politica que la pasada live de 3m).
 $RealRegistrationCheck = Join-Path (
-    $(if ($env:SAIKIT_CLAUDE_REPO) { $env:SAIKIT_CLAUDE_REPO } else { 'C:\dev\summonaikit-claude' })
-) 'tools\check-hook-registration.sh'
+    $(if ($env:SAIKIT_CLAUDE_REPO) { $env:SAIKIT_CLAUDE_REPO } else { Join-Path $UserHome 'dev/summonaikit-claude' })
+) 'tools/check-hook-registration.sh'
 if (Test-Path -LiteralPath $RealRegistrationCheck) {
     $regHomeE = New-HealHomeWithSettings -Name 'fake-home-heal-reg-e' -SettingsJson $settingsWithoutHook
     $rRegE = Invoke-SaikitGateHeal -FakeHome $regHomeE -ExtraArgs @('-RegistrationCheck', $RealRegistrationCheck)
