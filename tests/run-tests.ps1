@@ -725,6 +725,8 @@ foreach ($con in @('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm')) {
 # lectura), si pierde los candados de skills/red, si toma el camino inline
 # por stdin exclusivo de claude, o si deja de limpiar ANTHROPIC_* (zcode
 # tambien lee ANTHROPIC_BASE_URL como fallback).
+Assert-True ($null -ne $rGlm) "-Con glm dry run captured by the loop above ('glm' must stay in its target list)"
+if ($null -eq $rGlm) { $rGlm = [PSCustomObject]@{ Stdout = '' } }
 $glmCmd = [regex]::Match($rGlm.Stdout, 'Comando: ([^\r\n]*)').Groups[1].Value
 Assert-True ($glmCmd -match 'zcode') "-Con glm runs the zcode binary, not a Claude Code launcher" "cmd=$glmCmd"
 Assert-True ($glmCmd -match '--mode plan') '-Con glm runs zcode read-only (--mode plan)' "cmd=$glmCmd"

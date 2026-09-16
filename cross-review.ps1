@@ -327,6 +327,9 @@ function Get-CliInvocation {
         # apagarlo, asi que cada revision levanta el backend de navegador
         # (plugin browser-use). Para cerrarla: deshabilitar ese plugin en la
         # config de zcode (~/.zcode/cli/config.json), no desde aqui.
+        # Segunda exposicion declarada: el modo plan permite herramientas MCP
+        # no destructivas, y una denylist por nombre no las cubre; si hay
+        # servidores MCP configurados en ~/.zcode, corren durante la revision.
         $tools = ConvertTo-WindowsCliArg -Value 'Bash Edit Write NotebookEdit Skill Workflow Agent WebFetch WebSearch'
         $cliArgsText = "-p $escapedPrompt --mode plan --no-color --disallowed-tools $tools"
         $resolved = Resolve-CliExePath -Name (Get-CliBinaryName -Con 'glm')
@@ -731,7 +734,7 @@ try {
         # siguiente candidato, no dar el gate por bueno en silencio).
         if ($result.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($result.Stdout)) {
             Write-Host ''
-            Write-Host "=== Revisor efectivo: $candidate ==="
+            Write-Host "=== Revisor efectivo: $candidate (binario '$(Get-CliBinaryName -Con $candidate)') ==="
             exit 0
         }
 

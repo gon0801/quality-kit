@@ -173,7 +173,9 @@ pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engi
   NUNCA un lanzador de Claude Code apuntado a Z.AI. Ojo: zcode arranca su
   backend de navegador headless en toda invocacion y no hay flag para
   apagarlo; si eso no se quiere, deshabilitar el plugin `browser-use` en
-  `~/.zcode/cli/config.json`.
+  `~/.zcode/cli/config.json`. `glm` tambien se invoca con `ANTHROPIC_*`
+  limpias (zcode las lee como fallback), por eso necesita `zcode login`
+  (OAuth) y no una API key en el entorno.
 - `-Con auto`: prueba la cadena `claude -> glm -> grok -> kimi -> qwen -> codex` (el cerebro mas
   fuerte primero) y usa el PRIMERO que entregue una revision de verdad,
   saltando al que pongas en `-Excluir` (la IA que escribio el cambio: una
