@@ -167,6 +167,15 @@ pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engi
 
 - `-Con` (obligatorio): que IA hace la revision -- `kimi`, `codex`,
   `claude`, `glm`, `grok`, `qwen`, o `auto`.
+  `glm` invoca el binario `zcode` (paquete `zcode-app-cli`, cliente no
+  oficial del runtime ZCode de Z.AI; se instala con
+  `npm i -g zcode-app-cli` y `zcode login`), en modo plan (solo lectura),
+  NUNCA un lanzador de Claude Code apuntado a Z.AI. Ojo: zcode arranca su
+  backend de navegador headless en toda invocacion y no hay flag para
+  apagarlo; si eso no se quiere, deshabilitar el plugin `browser-use` en
+  `~/.zcode/cli/config.json`. `glm` tambien se invoca con `ANTHROPIC_*`
+  limpias (zcode las lee como fallback), por eso necesita `zcode login`
+  (OAuth) y no una API key en el entorno.
 - `-Con auto`: prueba la cadena `claude -> glm -> grok -> kimi -> qwen -> codex` (el cerebro mas
   fuerte primero) y usa el PRIMERO que entregue una revision de verdad,
   saltando al que pongas en `-Excluir` (la IA que escribio el cambio: una
@@ -177,7 +186,7 @@ pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engi
   "Revisor efectivo" para que quede claro quien reviso de verdad.
   Nota de diseno: `claude` se invoca SIEMPRE con las variables de entorno
   `ANTHROPIC_*` y `CLAUDE_CODE_USE_*` limpias -- asi una redireccion por
-  variables (una sesion lanzada con `glm`, o los toggles de Bedrock/Vertex)
+  variables (un lanzador tipo `~/bin/glm-claude`, o los toggles de Bedrock/Vertex)
   no desvia la revision: va a la cuenta real de Claude, con el modelo
   default del plan (que mejora solo cuando Anthropic actualiza el plan, sin
   tocar nada aca). Limite honesto: esto cubre redirecciones por variables
