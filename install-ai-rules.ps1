@@ -57,7 +57,7 @@ $SectionBody = @'
 2. Cada bug que arreglas incluye, en el mismo cambio, una prueba que lo habria atrapado.
 3. Durante la implementacion corre pruebas focalizadas; ejecuta la bateria completa una sola vez por bloque sobre el commit final, preferentemente en CI. Si commit, push o CI ya validaron el mismo SHA, no repitas esos checks manualmente.
 4. Agrupa los hallazgos de revision y corrigelos en una sola ronda por bloque. Para cambios delicados, sugiere una revision cruzada con otra IA: __CROSS_REVIEW__
-   TOPE DURO: maximo 1 ronda; una segunda SOLO si la primera hallo severidad alta; JAMAS una tercera (los hallazgos residuales se declaran en el spec/PR, no se re-revisan). Cada ronda cuesta ~100-150k tokens.
+   Sin tope de rondas de cross-review: se repite mientras la ronda anterior haya encontrado algo; los hallazgos que se deciden no atender se declaran en el spec/PR. Cada ronda cuesta ~100-150k tokens.
 5. Una observacion tardia menor queda pendiente; solo seguridad, datos o el comportamiento solicitado reabren el ciclo. Despues del deploy ejecuta el checklist una sola vez y reutiliza evidencia valida mientras el SHA no cambie.
 6. Si el repo no tiene kit de calidad todavia, sugiere correrlo una vez: __INIT_REPO__ (no insistas si dice que no).
 7. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con __REPO_HYGIENE__ -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
