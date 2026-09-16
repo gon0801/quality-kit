@@ -210,7 +210,7 @@ function Invoke-CrossReviewDryRun {
 function Invoke-CrossReviewAutoWithoutAiClisOnPath {
     param([string]$RepoPath)
     $aiDirs = @()
-    foreach ($cli in @('claude', 'kimi', 'codex', 'grok', 'qwen', 'zcode', 'glm')) {
+    foreach ($cli in @('claude', 'kimi', 'codex', 'grok', 'qwen', 'zcode')) {
         foreach ($cmd in @(Get-Command -Name $cli -All -ErrorAction SilentlyContinue)) {
             $aiDirs += (Split-Path -Parent $cmd.Source).TrimEnd('\')
         }
@@ -695,12 +695,13 @@ Assert-True (Test-Path -LiteralPath (Join-Path $mcp2MainRepo '.git\hooks\pre-pus
 # TEST GROUP 3: cross-review.ps1 -DryRun (never calls a real AI in this suite)
 # ------------------------------------------------------------------
 Write-Host ''
-Write-Host '=== TEST GROUP 3: cross-review.ps1 -DryRun output shape, for all five targets ==='
+Write-Host '=== TEST GROUP 3: cross-review.ps1 -DryRun output shape, for all six targets ==='
 # A small real change to review, so the diff is non-empty.
 Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`n`ndef sub(a, b):`n    return a - b`n"
 
 foreach ($con in @('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm')) {
     $r = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con $con
+    if ($con -eq 'glm') { $rGlm = $r }
     Assert-True ($r.ExitCode -eq 0) "cross-review.ps1 -DryRun exits 0 for -Con $con" "exit=$($r.ExitCode) stderr=$($r.Stderr)"
     Assert-True ($r.Stdout -match 'DRY RUN') "-Con $con -DryRun output announces DRY RUN"
     Assert-True ($r.Stdout -match [regex]::Escape('Comando:')) "-Con $con -DryRun output shows the exact command that would run"
@@ -717,17 +718,22 @@ foreach ($con in @('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm')) {
     }
 }
 
-# glm = zcode (el CLI de Z.AI), nunca el lanzador ~/bin/glm de Claude Code.
-# Discrimina: falla si 'glm' vuelve a resolver a claude (comando sin
-# 'zcode'), si pierde el modo plan (solo lectura) o si toma el camino
-# inline por stdin que es exclusivo de claude.
-$rGlm = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'glm'
-Assert-True ($rGlm.ExitCode -eq 0) '-Con glm -DryRun exits 0' "exit=$($rGlm.ExitCode) stderr=$($rGlm.Stderr)"
+# glm = binario zcode (zcode-app-cli, cliente del runtime ZCode de Z.AI),
+# nunca un lanzador de Claude Code apuntado a Z.AI. Usa el $rGlm capturado
+# en el loop de arriba (un solo spawn). Discrimina: falla si 'glm' vuelve
+# a resolver a claude (comando sin 'zcode'), si pierde el modo plan (solo
+# lectura), si pierde los candados de skills/red, si toma el camino inline
+# por stdin exclusivo de claude, o si deja de limpiar ANTHROPIC_* (zcode
+# tambien lee ANTHROPIC_BASE_URL como fallback).
 $glmCmd = [regex]::Match($rGlm.Stdout, 'Comando: ([^\r\n]*)').Groups[1].Value
-Assert-True ($glmCmd -match 'zcode') "-Con glm runs the zcode binary (Z.AI CLI), not Claude Code's glm launcher" "cmd=$glmCmd"
+Assert-True ($glmCmd -match 'zcode') "-Con glm runs the zcode binary, not a Claude Code launcher" "cmd=$glmCmd"
 Assert-True ($glmCmd -match '--mode plan') '-Con glm runs zcode read-only (--mode plan)' "cmd=$glmCmd"
+Assert-True ($glmCmd -match '--disallowed-tools "[^"]*Skill[^"]*"') '-Con glm denies Skill (plan mode does not block skills by itself)' "cmd=$glmCmd"
+Assert-True ($glmCmd -match '--disallowed-tools "[^"]*WebFetch[^"]*"') '-Con glm denies WebFetch (local reviewer, like grok --disable-web-search)' "cmd=$glmCmd"
+Assert-True ($glmCmd -notmatch 'MultiEdit') '-Con glm denylist uses real zcode tool names (MultiEdit does not exist there)' "cmd=$glmCmd"
 Assert-True ($rGlm.Stdout -notmatch 'inline por stdin') '-Con glm reads the temp diff file (the stdin inline path is claude-only)'
-Assert-True ($rGlm.Stdout -notmatch 'ANTHROPIC_') '-Con glm does not strip ANTHROPIC_* (that is the claude launcher path, not zcode)'
+Assert-True ($rGlm.Stdout -match '(?m)^Nota: se invocaria con las variables de entorno ANTHROPIC_\*') '-Con glm strips ANTHROPIC_* (zcode reads ANTHROPIC_BASE_URL as fallback)'
+Assert-True ($rGlm.Stdout -notmatch '(?m)^Nota: se invocaria.*CLAUDE_CONFIG_DIR') '-Con glm does not strip CLAUDE_CODE_*/CLAUDE_CONFIG_DIR (Claude Code only; zcode never reads them)'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 3b: cross-review.ps1 -Alcance variations select the right diff ==='

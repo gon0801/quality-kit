@@ -35,7 +35,7 @@ jobs:
         run: |
           $stubDir = Join-Path $env:RUNNER_TEMP "quality-cli-stubs"
           New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
-          foreach ($name in @("kimi", "codex", "claude", "glm", "zcode", "grok", "qwen")) {
+          foreach ($name in @("kimi", "codex", "claude", "zcode", "grok", "qwen")) {
             if ($env:OS -eq "Windows_NT") {
               "@echo off`r`nexit /b 0`r`n" | Set-Content -LiteralPath (Join-Path $stubDir "$name.cmd") -Encoding ascii
             } else {

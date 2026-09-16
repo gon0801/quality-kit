@@ -13,11 +13,13 @@
 #
 # -Con auto: try the strongest available reviewer first and fall back down
 # the chain (claude -> glm -> grok -> kimi -> qwen -> codex), skipping -Excluir
-#   ('glm' = zcode, the Z.AI CLI, never Claude Code pointed at Z.AI; see Get-CliBinaryName)
-# (the AI that wrote the change). claude is always invoked with ANTHROPIC_*,
+# (the AI that wrote the change). 'glm' in that chain is the `zcode` binary
+# (zcode-app-cli, an unofficial client for Z.AI's ZCode runtime), never
+# Claude Code pointed at Z.AI; see Get-CliBinaryName.
+# claude is always invoked with ANTHROPIC_*,
 # CLAUDE_CODE_* and
 # CLAUDE_CONFIG_DIR env vars stripped, so env-var redirections (a
-# 'glm'-launched session, Bedrock/Vertex toggles, a relocated config tree,
+# ~/bin/glm-claude-style launcher session, Bedrock/Vertex toggles, a relocated config tree,
 # an injected OAuth token or API-key helper) cannot steer the review away
 # from the real Claude account (OAuth + the plan's default model).
 #
@@ -84,7 +86,7 @@
 # three) -- so that is the one strategy this script uses for all of them.
 
 param(
-    # 'auto' = probar la cadena claude -> grok -> kimi -> qwen -> codex
+    # 'auto' = probar la cadena claude -> glm -> grok -> kimi -> qwen -> codex
     # (el cerebro mas fuerte primero) y usar el primero que responda,
     # saltando -Excluir.
     [Parameter(Mandatory = $true)]
@@ -273,11 +275,12 @@ function Resolve-CliExePath {
     return $allCmds[0].Source
 }
 
-# 'glm' en la cadena ES zcode, el CLI propio de Z.AI (binario `zcode`), y NO
-# el lanzador ~/bin/glm que apunta Claude Code a Z.AI. Decision de David
-# (2026-09-15): el revisor #1 de la cadena es zcode. El nombre 'glm' se
-# conserva en la cadena y en -Excluir para no romper runbooks que ya lo
-# nombran; aqui se traduce al binario real.
+# 'glm' en la cadena ES el binario `zcode` (paquete zcode-app-cli: cliente
+# NO oficial, de un tercero, que empaqueta el runtime ZCode de Z.AI y entra
+# con el login OAuth de Z.AI), y NO el lanzador ~/bin/glm-claude que apunta
+# Claude Code a Z.AI. Decision de David (2026-09-15): el revisor #1 de la
+# cadena es zcode. El nombre 'glm' se conserva en la cadena y en -Excluir
+# para no romper runbooks que ya lo nombran; aqui se traduce al binario real.
 function Get-CliBinaryName {
     param([string]$Con)
     if ($Con -eq 'glm') { return 'zcode' }
@@ -307,13 +310,24 @@ function Get-CliInvocation {
         $cliArgsText = "-p $escapedPrompt"
         $resolved = Resolve-CliExePath -Name 'claude'
     } elseif ($Con -eq 'glm') {
-        # zcode (Z.AI) headless: -p <prompt> corre sin TUI y sale. --mode plan
-        # = solo lectura (verificado 2026-09-15 en la Mac: pedirle crear un
+        # zcode headless: -p <prompt> corre sin TUI y sale. --mode plan =
+        # solo lectura (verificado 2026-09-15 en la Mac: pedirle crear un
         # archivo responde "no puedo escribir" y el archivo no aparece), asi
-        # que puede leer el temp file del diff y VERIFICAR fuera del diff sin
-        # poder editar. --disallowed-tools es cinturon y tirantes por si un
-        # dia el modo plan cambia. --no-color = stdout plano.
-        $tools = ConvertTo-WindowsCliArg -Value 'Bash Edit Write MultiEdit NotebookEdit'
+        # que lee el temp file del diff y puede VERIFICAR fuera del diff sin
+        # poder editar. --no-color = stdout plano.
+        # --disallowed-tools usa los nombres REALES del set de zcode (no el
+        # vocabulario de Claude Code: `MultiEdit` no existe ahi). Ademas de
+        # las de escritura se niegan Skill/Workflow/Agent (el modo plan NO las
+        # bloquea: permite todo lo read-only, y zcode trae 13 skills
+        # habilitadas; mismo incidente que motivo --no-subagents en grok) y
+        # WebFetch/WebSearch (el revisor es local, como grok con
+        # --disable-web-search).
+        # Exposicion DECLARADA: el lanzador de zcode antepone
+        # --browser-use=headless a toda invocacion con -p y no hay flag para
+        # apagarlo, asi que cada revision levanta el backend de navegador
+        # (plugin browser-use). Para cerrarla: deshabilitar ese plugin en la
+        # config de zcode (~/.zcode/cli/config.json), no desde aqui.
+        $tools = ConvertTo-WindowsCliArg -Value 'Bash Edit Write NotebookEdit Skill Workflow Agent WebFetch WebSearch'
         $cliArgsText = "-p $escapedPrompt --mode plan --no-color --disallowed-tools $tools"
         $resolved = Resolve-CliExePath -Name (Get-CliBinaryName -Con 'glm')
     } elseif ($Con -eq 'grok') {
@@ -381,7 +395,7 @@ function Invoke-CliHeadless {
     $psi.UseShellExecute = $false
     foreach ($prefix in $StripEnvPrefixes) {
         # Quitar del ambiente heredado toda variable con estos prefijos. El
-        # caso real: una sesion lanzada con 'glm' redirige el CLI de claude a
+        # caso real: un lanzador tipo ~/bin/glm-claude redirige el CLI de claude a
         # otro proveedor/modelo via variables ANTHROPIC_*, y las
         # CLAUDE_CODE_USE_* (Bedrock/Vertex) redirigen sin ese prefijo -- la
         # revision cruzada debe ir a la cuenta real de Claude (login OAuth +
@@ -490,7 +504,8 @@ if (-not (Test-IsGitRepo -RepoPath $RepoPath)) {
 # validacion (p.ej. pedir que una IA revise su propio cambio) falle claro
 # incluso cuando el diff este vacio. En 'auto' se intenta el cerebro mas
 # fuerte primero (claude = el modelo default del plan de la cuenta, que
-# sigue solo las mejoras de modelo), despues grok (otro frontier),
+# sigue solo las mejoras de modelo), despues glm (zcode, solo lectura),
+# despues grok (otro frontier),
 # despues kimi (rapido), despues qwen (plan/read-only), despues codex
 # (capaz pero de tiempos variables en esta maquina) -- saltando -Excluir.
 # Fail-open: si un candidato no esta instalado o no entrega revision, se
@@ -584,10 +599,10 @@ try {
     foreach ($candidate in $chain) {
         if (-not (Test-CliAvailable -Name (Get-CliBinaryName -Con $candidate))) {
             if ($Con -eq 'auto') {
-                Write-Host "==> '$candidate' no esta instalado en esta maquina; sigo con el siguiente de la cadena."
+                Write-Host "==> '$candidate' (binario '$(Get-CliBinaryName -Con $candidate)') no esta instalado en esta maquina; sigo con el siguiente de la cadena."
                 continue
             }
-            throw "No encontre '$candidate' en el PATH de esta maquina. Confirma que la CLI esta instalada y accesible."
+            throw "No encontre el binario '$(Get-CliBinaryName -Con $candidate)' (candidato '$candidate') en el PATH de esta maquina. Confirma que la CLI esta instalada y accesible."
         }
 
         # claude: diff inline por stdin + prompt sin lecturas de archivo
@@ -632,6 +647,13 @@ try {
         # XDG_CONFIG_HOME quedo FUERA a proposito: se probo en vivo y en
         # Windows la CLI no la honra (no crea nada en la ruta indicada).
         if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_', 'CLAUDE_CONFIG_DIR') }
+        # glm (zcode): su SDK vendorizado trae un provider de tipo "anthropic"
+        # que lee ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY como fallback. En la
+        # practica su config fija baseURL y entra por OAuth de Z.AI, asi que
+        # el fallback no se dispara -- pero se limpia igual, por la misma
+        # garantia que claude. CLAUDE_CODE_* y CLAUDE_CONFIG_DIR son de
+        # Claude Code y zcode no las lee: no aplican.
+        if ($candidate -eq 'glm') { $stripPrefixes = @('ANTHROPIC_') }
 
         if ($DryRun) {
             Write-Host ''
