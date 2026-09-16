@@ -210,7 +210,7 @@ function Invoke-CrossReviewDryRun {
 function Invoke-CrossReviewAutoWithoutAiClisOnPath {
     param([string]$RepoPath)
     $aiDirs = @()
-    foreach ($cli in @('claude', 'kimi', 'codex', 'grok', 'qwen')) {
+    foreach ($cli in @('claude', 'kimi', 'codex', 'grok', 'qwen', 'zcode', 'glm')) {
         foreach ($cmd in @(Get-Command -Name $cli -All -ErrorAction SilentlyContinue)) {
             $aiDirs += (Split-Path -Parent $cmd.Source).TrimEnd('\')
         }
@@ -699,7 +699,7 @@ Write-Host '=== TEST GROUP 3: cross-review.ps1 -DryRun output shape, for all fiv
 # A small real change to review, so the diff is non-empty.
 Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`n`ndef sub(a, b):`n    return a - b`n"
 
-foreach ($con in @('kimi', 'codex', 'claude', 'grok', 'qwen')) {
+foreach ($con in @('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm')) {
     $r = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con $con
     Assert-True ($r.ExitCode -eq 0) "cross-review.ps1 -DryRun exits 0 for -Con $con" "exit=$($r.ExitCode) stderr=$($r.Stderr)"
     Assert-True ($r.Stdout -match 'DRY RUN') "-Con $con -DryRun output announces DRY RUN"
@@ -716,6 +716,18 @@ foreach ($con in @('kimi', 'codex', 'claude', 'grok', 'qwen')) {
         Remove-Item -LiteralPath $tempFilePath -Force -ErrorAction SilentlyContinue
     }
 }
+
+# glm = zcode (el CLI de Z.AI), nunca el lanzador ~/bin/glm de Claude Code.
+# Discrimina: falla si 'glm' vuelve a resolver a claude (comando sin
+# 'zcode'), si pierde el modo plan (solo lectura) o si toma el camino
+# inline por stdin que es exclusivo de claude.
+$rGlm = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'glm'
+Assert-True ($rGlm.ExitCode -eq 0) '-Con glm -DryRun exits 0' "exit=$($rGlm.ExitCode) stderr=$($rGlm.Stderr)"
+$glmCmd = [regex]::Match($rGlm.Stdout, 'Comando: ([^\r\n]*)').Groups[1].Value
+Assert-True ($glmCmd -match 'zcode') "-Con glm runs the zcode binary (Z.AI CLI), not Claude Code's glm launcher" "cmd=$glmCmd"
+Assert-True ($glmCmd -match '--mode plan') '-Con glm runs zcode read-only (--mode plan)' "cmd=$glmCmd"
+Assert-True ($rGlm.Stdout -notmatch 'inline por stdin') '-Con glm reads the temp diff file (the stdin inline path is claude-only)'
+Assert-True ($rGlm.Stdout -notmatch 'ANTHROPIC_') '-Con glm does not strip ANTHROPIC_* (that is the claude launcher path, not zcode)'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 3b: cross-review.ps1 -Alcance variations select the right diff ==='

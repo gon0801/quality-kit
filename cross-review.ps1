@@ -13,6 +13,7 @@
 #
 # -Con auto: try the strongest available reviewer first and fall back down
 # the chain (claude -> glm -> grok -> kimi -> qwen -> codex), skipping -Excluir
+#   ('glm' = zcode, the Z.AI CLI, never Claude Code pointed at Z.AI; see Get-CliBinaryName)
 # (the AI that wrote the change). claude is always invoked with ANTHROPIC_*,
 # CLAUDE_CODE_* and
 # CLAUDE_CONFIG_DIR env vars stripped, so env-var redirections (a
@@ -272,6 +273,17 @@ function Resolve-CliExePath {
     return $allCmds[0].Source
 }
 
+# 'glm' en la cadena ES zcode, el CLI propio de Z.AI (binario `zcode`), y NO
+# el lanzador ~/bin/glm que apunta Claude Code a Z.AI. Decision de David
+# (2026-09-15): el revisor #1 de la cadena es zcode. El nombre 'glm' se
+# conserva en la cadena y en -Excluir para no romper runbooks que ya lo
+# nombran; aqui se traduce al binario real.
+function Get-CliBinaryName {
+    param([string]$Con)
+    if ($Con -eq 'glm') { return 'zcode' }
+    return $Con
+}
+
 # IMPORTANT (confirmed live): launching a resolved .cmd shim DIRECTLY as
 # ProcessStartInfo.FileName (with redirected stdin/stdout/stderr) starts a
 # real child process, but it hangs forever instead of ever finishing --
@@ -295,19 +307,15 @@ function Get-CliInvocation {
         $cliArgsText = "-p $escapedPrompt"
         $resolved = Resolve-CliExePath -Name 'claude'
     } elseif ($Con -eq 'glm') {
-        # glm NO es una CLI aparte: es un lanzador (npm) que exporta
-        # ANTHROPIC_BASE_URL hacia Z.AI y ejecuta `claude --model glm-5.2`.
-        # Por eso usa EXACTAMENTE los mismos argumentos que claude y el mismo
-        # camino de diff inline: comparten binario, asi que comparten el modo
-        # de falla (headless + lectura de archivos = cuelgue de permiso).
-        #
-        # El stripPrefixes de ANTHROPIC_*/CLAUDE_CODE_*/CLAUDE_CONFIG_DIR se
-        # le aplica IGUAL que a claude, y eso es deliberado: limpia lo que
-        # trajera la sesion padre y deja que el lanzador ponga las suyas
-        # despues. Resultado: la revision va a GLM de verdad, no a lo que
-        # apuntara el entorno heredado.
-        $cliArgsText = "-p $escapedPrompt"
-        $resolved = Resolve-CliExePath -Name 'glm'
+        # zcode (Z.AI) headless: -p <prompt> corre sin TUI y sale. --mode plan
+        # = solo lectura (verificado 2026-09-15 en la Mac: pedirle crear un
+        # archivo responde "no puedo escribir" y el archivo no aparece), asi
+        # que puede leer el temp file del diff y VERIFICAR fuera del diff sin
+        # poder editar. --disallowed-tools es cinturon y tirantes por si un
+        # dia el modo plan cambia. --no-color = stdout plano.
+        $tools = ConvertTo-WindowsCliArg -Value 'Bash Edit Write MultiEdit NotebookEdit'
+        $cliArgsText = "-p $escapedPrompt --mode plan --no-color --disallowed-tools $tools"
+        $resolved = Resolve-CliExePath -Name (Get-CliBinaryName -Con 'glm')
     } elseif ($Con -eq 'grok') {
         # grok -p / --single: headless, imprime a stdout y sale (docs
         # oficiales). --tools allowlist = solo lectura, para que pueda
@@ -574,7 +582,7 @@ try {
     # mina si mas adelante alguien corre un comando nativo dentro del loop.
     $chainExitCode = 1
     foreach ($candidate in $chain) {
-        if (-not (Test-CliAvailable -Name $candidate)) {
+        if (-not (Test-CliAvailable -Name (Get-CliBinaryName -Con $candidate))) {
             if ($Con -eq 'auto') {
                 Write-Host "==> '$candidate' no esta instalado en esta maquina; sigo con el siguiente de la cadena."
                 continue
@@ -582,12 +590,12 @@ try {
             throw "No encontre '$candidate' en el PATH de esta maquina. Confirma que la CLI esta instalada y accesible."
         }
 
-        # claude y glm: diff inline por stdin + prompt sin lecturas de archivo
-        # (ver Build-ReviewPromptInline); kimi/codex/grok/qwen leen el temp
-        # file. glm comparte binario con claude, asi que comparte el camino.
+        # claude: diff inline por stdin + prompt sin lecturas de archivo
+        # (ver Build-ReviewPromptInline); kimi/codex/grok/qwen/glm(zcode)
+        # leen el temp file.
         $candidatePrompt = $prompt
         $candidateStdin = ''
-        if ($candidate -eq 'claude' -or $candidate -eq 'glm') {
+        if ($candidate -eq 'claude') {
             $candidatePrompt = Build-ReviewPromptInline -Label $diffResult.Label -RepoName $repoName
             $candidateStdin = "=== DIFF ===`n" + $cappedDiff
         }
@@ -623,7 +631,7 @@ try {
         # que son informativas: una invocacion mas limpia, no una rota.
         # XDG_CONFIG_HOME quedo FUERA a proposito: se probo en vivo y en
         # Windows la CLI no la honra (no crea nada en la ruta indicada).
-        if ($candidate -eq 'claude' -or $candidate -eq 'glm') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_', 'CLAUDE_CONFIG_DIR') }
+        if ($candidate -eq 'claude') { $stripPrefixes = @('ANTHROPIC_', 'CLAUDE_CODE_', 'CLAUDE_CONFIG_DIR') }
 
         if ($DryRun) {
             Write-Host ''
