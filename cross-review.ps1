@@ -7,6 +7,7 @@
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con kimi
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Alcance staged
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con claude -Alcance last-commit
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Desde <sha-de-la-ronda-1>
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con grok
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con qwen
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi
@@ -121,6 +122,13 @@ param(
     # repetidos. Vacio = diff completo del alcance elegido.
     [string[]]$Archivos = @(),
 
+    # Segunda ronda de revision: revisa SOLO lo que cambio desde este commit
+    # (el SHA que vio la ronda anterior), no el cambio entero otra vez. Nacio
+    # de ciclos de revision que no terminaban: cada ronda re-revisaba todo y
+    # traia hallazgos nuevos sobre codigo que no habia cambiado. Excluyente
+    # con -Alcance.
+    [string]$Desde = '',
+
     [string]$RepoPath = (Get-Location).Path,
 
     # Tope por candidato. Caso real (2026-07-05): claude se quedo colgado
@@ -153,7 +161,7 @@ function Test-IsGitRepo {
 # ------------------------------------------------------------------
 
 function Get-ReviewDiff {
-    param([string]$RepoPath, [string]$Alcance, [string[]]$FileScope = @())
+    param([string]$RepoPath, [string]$Alcance, [string[]]$FileScope = @(), [string]$Desde = '')
     # El separador '--' + pathspecs limita cada diff a los archivos pedidos;
     # con $FileScope vacio, $pathspecArgs queda vacio y los comandos son
     # identicos a los de siempre.
@@ -169,7 +177,10 @@ function Get-ReviewDiff {
     $savedEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        if ($Alcance -eq 'staged') {
+        if ($Desde) {
+            $lines = @(& git diff $Desde @pathspecArgs 2>&1)
+            $label = "SOLO los arreglos desde $Desde (git diff $Desde)"
+        } elseif ($Alcance -eq 'staged') {
             $lines = @(& git diff --cached @pathspecArgs 2>&1)
             $label = 'cambios en stage (git diff --cached)'
         } elseif ($Alcance -eq 'working') {
@@ -217,8 +228,16 @@ function Get-RepoName {
     return (Split-Path -Leaf $RepoPath)
 }
 
+# Clausula de la segunda ronda (-Desde): el diff son solo los arreglos, y el
+# revisor juzga esos arreglos en vez de re-revisar lo que no cambio.
+function Get-ClausulaRonda {
+    param([string]$Desde)
+    if (-not $Desde) { return '' }
+    return "Este diff son SOLO los arreglos de una ronda de revision anterior (lo que cambio desde $Desde): juzga si cada arreglo es correcto y si rompio algo, y no vuelvas a revisar codigo que no cambio. "
+}
+
 function Build-ReviewPrompt {
-    param([string]$DiffFilePath, [string]$Label, [string]$RepoName)
+    param([string]$DiffFilePath, [string]$Label, [string]$RepoName, [string]$Desde = '')
     # La clausula VERIFICAR nace de falsos positivos reales (retro Kimi
     # 2026-07-09): el revisor dudo de un UNIQUE cuyo DDL existia, de un
     # import que existia y de una funcion definida en otra parte -- todo
@@ -238,7 +257,7 @@ function Build-ReviewPrompt {
     # ningun veredicto. NO se le dice "sin herramientas" a proposito --
     # leer/grepear el repo es justo lo que la clausula VERIFICAR de arriba
     # exige, y en la medicion el candidato siguio leyendo el diff sin problema.
-    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. NO uses skills ni workflows propios: responde vos directamente en este mismo turno, sin cargar ninguna skill. Lee el archivo '$DiffFilePath' (contiene un diff de git: $Label, del repositorio '$RepoName') y revisalo. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes en ciego -- tu directorio de trabajo ES el repositorio real: verificalo primero leyendo/grepeando el archivo en cuestion. Si no podes verificarlo, reportalo con el prefijo 'VERIFICAR:' en vez de afirmarlo como bug, diciendo exactamente que habria que confirmar. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
+    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. $(Get-ClausulaRonda -Desde $Desde)NO uses skills ni workflows propios: responde vos directamente en este mismo turno, sin cargar ninguna skill. Lee el archivo '$DiffFilePath' (contiene un diff de git: $Label, del repositorio '$RepoName') y revisalo. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes en ciego -- tu directorio de trabajo ES el repositorio real: verificalo primero leyendo/grepeando el archivo en cuestion. Si no podes verificarlo, reportalo con el prefijo 'VERIFICAR:' en vez de afirmarlo como bug, diciendo exactamente que habria que confirmar. Devuelve los hallazgos como una lista numerada. Marca cada uno como BLOQUEANTE o NO BLOQUEANTE: bloqueante es SOLO seguridad, datos, una regla innegociable del repo, el comportamiento pedido roto o una prueba que no discrimina, y va con el comando o los pasos que lo reproducen; sin reproduccion va como NO BLOQUEANTE. Una linea de explicacion por hallazgo. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
 }
 
 # Variante para claude: el diff viaja INLINE por stdin en vez de pedirle leer
@@ -247,12 +266,12 @@ function Build-ReviewPrompt {
 # tiene quien la conteste -- candidato #1 del cuelgue observado. Con el diff
 # en stdin la revision no necesita NINGUNA herramienta.
 function Build-ReviewPromptInline {
-    param([string]$Label, [string]$RepoName)
+    param([string]$Label, [string]$RepoName, [string]$Desde = '')
     # Este candidato NO tiene herramientas por diseno (anti-cuelgue), asi que
     # no puede verificar nada fuera del diff: todo hallazgo que dependa de
     # codigo ausente va SIEMPRE como VERIFICAR:, nunca afirmado (misma retro
     # de falsos positivos que Build-ReviewPrompt).
-    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. A continuacion de estas instrucciones viene un diff de git ($Label, del repositorio '$RepoName'). Revisalo SIN usar ninguna herramienta: todo lo que necesitas ya esta en este mensaje. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza y no tenes forma de ver el resto del repo: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes como bug -- reportalo con el prefijo 'VERIFICAR:' diciendo exactamente que habria que confirmar, y reserva las afirmaciones directas para lo que el propio diff demuestra. Devuelve los hallazgos como una lista numerada, cada uno con su severidad (alta/media/baja) y una linea de explicacion. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
+    return "Actua como revisor de codigo externo e independiente -- una segunda opinion sobre un cambio que escribio otro asistente de IA, no vos. $(Get-ClausulaRonda -Desde $Desde)A continuacion de estas instrucciones viene un diff de git ($Label, del repositorio '$RepoName'). Revisalo SIN usar ninguna herramienta: todo lo que necesitas ya esta en este mensaje. Busca bugs, regresiones, riesgos de seguridad y riesgos de calidad. Un diff es parcial por naturaleza y no tenes forma de ver el resto del repo: si un posible hallazgo depende de codigo que NO aparece en el diff (un import, un DDL/esquema, una funcion o constante definida en otra parte), NO lo afirmes como bug -- reportalo con el prefijo 'VERIFICAR:' diciendo exactamente que habria que confirmar, y reserva las afirmaciones directas para lo que el propio diff demuestra. Devuelve los hallazgos como una lista numerada. Marca cada uno como BLOQUEANTE o NO BLOQUEANTE: bloqueante es SOLO seguridad, datos, una regla innegociable del repo, el comportamiento pedido roto o una prueba que no discrimina, y va con el comando o los pasos que lo reproducen; sin reproduccion va como NO BLOQUEANTE. Una linea de explicacion por hallazgo. Si no encontras nada que objetar, responde exactamente la palabra: LGTM. Responde todo en espanol, en texto plano (sin acentos si podes evitarlos)."
 }
 
 function ConvertTo-WindowsCliArg {
@@ -550,7 +569,17 @@ if ($Con -eq 'auto') {
     $chain = @($Con)
 }
 
+if ($Desde) {
+    if ($Alcance) {
+        throw "-Desde y -Alcance no se combinan: -Desde ya elige el diff (lo que cambio desde ese commit)."
+    }
+    & git -C $RepoPath rev-parse --verify --quiet "$Desde^{commit}" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "-Desde: '$Desde' no es un commit de este repo ($RepoPath)."
+    }
+}
 $alcanceLabelForDisplay = $Alcance
+if ($Desde) { $alcanceLabelForDisplay = "desde $Desde (solo los arreglos)" }
 if ([string]::IsNullOrEmpty($alcanceLabelForDisplay)) { $alcanceLabelForDisplay = 'combinado (stage + working)' }
 Write-Host "Alcance: $alcanceLabelForDisplay"
 
@@ -566,7 +595,7 @@ if ($fileScope.Count -gt 0) {
     Write-Host "Archivos (pathspec de la tarea): $($fileScope -join ', ')"
 }
 
-$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope
+$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope -Desde $Desde
 
 # git puede FALLAR, y su stderr viene mezclado en el texto del diff (el "2>&1"
 # de arriba es a proposito, para conservar el diagnostico). Sin mirar el codigo
@@ -608,7 +637,7 @@ $repoName = Get-RepoName -RepoPath $RepoPath
 $tempDiffPath = Join-Path ([System.IO.Path]::GetTempPath()) ("quality-kit-review-" + [Guid]::NewGuid().ToString('N') + '.txt')
 Write-Utf8NoBomFile -Path $tempDiffPath -Content $cappedDiff
 
-$prompt = Build-ReviewPrompt -DiffFilePath $tempDiffPath -Label $diffResult.Label -RepoName $repoName
+$prompt = Build-ReviewPrompt -DiffFilePath $tempDiffPath -Label $diffResult.Label -RepoName $repoName -Desde $Desde
 
 try {
     # OJO: nombre distinto de $LASTEXITCODE a proposito (PowerShell no
@@ -630,7 +659,7 @@ try {
         $candidatePrompt = $prompt
         $candidateStdin = ''
         if ($candidate -eq 'claude') {
-            $candidatePrompt = Build-ReviewPromptInline -Label $diffResult.Label -RepoName $repoName
+            $candidatePrompt = Build-ReviewPromptInline -Label $diffResult.Label -RepoName $repoName -Desde $Desde
             $candidateStdin = "=== DIFF ===`n" + $cappedDiff
         }
 

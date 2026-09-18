@@ -70,7 +70,8 @@ Que hace:
   `init-repo.ps1` y ese paso se activa solo.
 - Agrega una seccion "Calidad" a `CLAUDE.md` y `AGENTS.md` del repo
   (los crea si no existen), con los comandos exactos, las reglas de hierro
-  y el flujo que limita cada bloque a una ronda consolidada de revision,
+  y el flujo que limita cada bloque a una ronda consolidada de revision
+  (otra solo por un hallazgo bloqueante, tope 2, lo demas a una fila del plan),
   una bateria completa sobre el commit final y un checklist de deploy.
 
 Se puede correr mas de una vez sin problema: nunca pisa una configuracion
@@ -159,6 +160,7 @@ frescos, no la misma IA revisandose a si misma.
 pwsh -NoProfile -File ./cross-review.ps1 -Con kimi
 pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Alcance staged
 pwsh -NoProfile -File ./cross-review.ps1 -Con claude -Alcance last-commit
+pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Desde <sha-de-la-ronda-1>
 pwsh -NoProfile -File ./cross-review.ps1 -Con grok
 pwsh -NoProfile -File ./cross-review.ps1 -Con qwen
 pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi
@@ -223,6 +225,13 @@ pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engi
   diff queda chico y los hallazgos relevantes. Combinable con `-Alcance`.
   OJO: una ruta mal tipeada da diff vacio en silencio; por eso el mensaje
   de "no hay diferencias" nombra el scope pedido, para que el typo se vea.
+- `-Desde <sha>` (opcional): la segunda ronda. Revisa SOLO lo que cambio
+  desde ese commit (`git diff <sha>`: lo commiteado despues y lo que falta
+  commitear), es decir los arreglos de la ronda anterior, y le pide al
+  revisor que juzgue si cada arreglo es correcto y si rompio algo, sin
+  volver a revisar lo que no cambio. No se combina con `-Alcance`; si el sha
+  no es un commit del repo, corta antes de llamar a nadie. Combinable con
+  `-Archivos`.
 - `-DryRun`: muestra el comando y el mensaje que se le mandaria a la IA,
   sin llamarla de verdad (util para probar sin gastar cuota).
 
@@ -234,8 +243,11 @@ tiene Windows para un solo argumento de linea de comandos (unos 32.000
 caracteres), que un diff de 60KB superaria facil si se lo pasaramos
 directo como texto. El archivo temporal se borra solo al terminar.
 
-La IA responde con una lista numerada de hallazgos (cada uno con severidad
-alta/media/baja) o, si no encuentra nada que objetar, la palabra `LGTM`.
+La IA responde con una lista numerada de hallazgos, cada uno marcado
+BLOQUEANTE o NO BLOQUEANTE, o, si no encuentra nada que objetar, la palabra
+`LGTM`. Un bloqueante trae el comando o los pasos que lo reproducen; sin
+reproduccion va como no bloqueante. Esa marca es la que decide si hay otra
+ronda (regla 4 de las instrucciones globales).
 
 ### Como se invoca cada CLI
 
@@ -311,9 +323,16 @@ con estas reglas:
    push o CI ya validaron el mismo SHA, esos checks no se repiten manualmente.
 4. Los hallazgos de revision se agrupan en una sola ronda por bloque. Para
    cambios delicados, sugerir revision cruzada
-   (`cross-review.ps1`).
-5. Una observacion tardia menor no reabre el ciclo; el checklist posterior al
-   deploy se ejecuta una sola vez mientras el SHA no cambie.
+   (`cross-review.ps1`). Solo un hallazgo BLOQUEANTE (seguridad, datos, una
+   regla innegociable, el comportamiento pedido roto o una prueba que no
+   discrimina), con el comando que lo reproduce, abre otra ronda. La segunda
+   revisa solo el diff de los arreglos (`-Desde <sha>`). Tope: 2 rondas; una
+   tercera solo si la segunda hallo un bloqueante creado por el arreglo de la
+   primera, y despues decide el operador. Lo que no se corrige va a una fila
+   del plan y se nombra en el PR.
+5. Una observacion tardia no bloqueante va a una fila del plan y no reabre el
+   ciclo; el checklist posterior al deploy se ejecuta una sola vez mientras el
+   SHA no cambie.
 6. Si el repo no tiene kit de calidad, sugerir `init-repo.ps1` una vez
    (sin insistir).
 
