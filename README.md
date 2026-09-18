@@ -326,7 +326,7 @@ con estas reglas:
    (`cross-review.ps1`). Solo un hallazgo BLOQUEANTE (seguridad, datos, una
    regla innegociable, el comportamiento pedido roto o una prueba que no
    discrimina), con el comando que lo reproduce, abre otra ronda. La segunda
-   revisa solo el diff de los arreglos (`-Desde <sha>`). Tope: 2 rondas; una
+   revisa solo el diff de los arreglos (`-Con <otro revisor> -Desde <sha>`). Tope: 2 rondas; una
    tercera solo si la segunda hallo un bloqueante creado por el arreglo de la
    primera, y despues decide el operador. Lo que no se corrige va a una fila
    del plan y se nombra en el PR.

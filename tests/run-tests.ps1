@@ -293,6 +293,7 @@ Assert-True ($pyClaudeMd -match 'commit, push o CI ya validaron') 'the managed C
 Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
 Assert-True ($pyAgentsMd -match 'Solo un hallazgo bloqueante') 'the generated AGENTS.md reopens a review only for a blocking finding'
 Assert-True ($pyAgentsMd -match 'Tope: 2 rondas') 'the generated AGENTS.md caps review rounds at two'
+Assert-True ($pyAgentsMd -match [regex]::Escape('cross-review -Con <otro revisor> -Desde <sha>')) 'the generated AGENTS.md gives a runnable second-round command, with the mandatory -Con'
 Assert-True ($pyAgentsMd -match 'va a una fila del plan') 'the generated AGENTS.md sends what is not fixed to a plan row'
 Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
 Assert-True ($pyClaudeMd -match '8\. CI: la bateria completa corre en jobs paralelos cuya union es la bateria') 'the Calidad section includes rule 8 (CI paralelo), summarized, for hosts that do not read the global rules'
@@ -793,10 +794,14 @@ Assert-True (($rDesdeYAlcance.Stdout + $rDesdeYAlcance.Stderr) -match 'no se com
 $rDesdeMalo = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde 'no-es-un-commit'
 Assert-True ($rDesdeMalo.ExitCode -ne 0) 'a -Desde that is not a commit is refused before calling any reviewer' "exit=$($rDesdeMalo.ExitCode)"
 Assert-True (($rDesdeMalo.Stdout + $rDesdeMalo.Stderr) -match 'no es un commit') 'the refusal names the bad -Desde'
-Assert-True ($rDefault.Stdout -match 'BLOQUEANTE o NO BLOQUEANTE') 'the reviewer prompt asks to mark every finding BLOQUEANTE or NO BLOQUEANTE'
-Assert-True ($rDefault.Stdout -match 'sin reproduccion va como NO BLOQUEANTE') 'a blocking finding needs a reproduction'
-Assert-True ($rDefault.Stdout -notmatch 'alta/media/baja') 'the old alta/media/baja severity scale is gone from the prompt'
-Assert-True ($rDefault.Stdout -notmatch 'SOLO los arreglos de una ronda') 'a first-round review does not get the second-round clause'
+# Sobre $rLast (el ultimo commit de $pyRepo, nunca vacio): una corrida sin diff
+# sale antes de armar el pedido y las comprobaciones negativas pasarian sin
+# mirar nada. La primera asercion fija que el pedido existe.
+Assert-True ($rLast.Stdout -match 'Actua como revisor de codigo externo') 'sanity: the first-round run did build a reviewer prompt'
+Assert-True ($rLast.Stdout -match 'BLOQUEANTE o NO BLOQUEANTE') 'the reviewer prompt asks to mark every finding BLOQUEANTE or NO BLOQUEANTE'
+Assert-True ($rLast.Stdout -match 'sin reproduccion va como NO BLOQUEANTE') 'a blocking finding needs a reproduction'
+Assert-True ($rLast.Stdout -notmatch 'alta/media/baja') 'the old alta/media/baja severity scale is gone from the prompt'
+Assert-True ($rLast.Stdout -notmatch 'SOLO los arreglos de una ronda') 'a first-round review does not get the second-round clause'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 3c: cross-review.ps1 caps an oversized diff at ~60KB with a truncation notice ==='
@@ -2066,6 +2071,7 @@ Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the glob
 Assert-True ($claudeMdAfterInstall -match 'observacion tardia no bloqueante va a una fila del plan') 'the global section sends a late non-blocking finding to a plan row instead of reopening the cycle'
 Assert-True ($claudeMdAfterInstall -match 'Solo un hallazgo BLOQUEANTE abre otra ronda') 'the global section reopens a review only for a blocking finding'
 Assert-True ($claudeMdAfterInstall -match 'Tope: 2 rondas') 'the global section caps review rounds at two'
+Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review -Con <otro revisor> -Desde')) 'the global second-round command carries the mandatory -Con'
 Assert-True ($claudeMdAfterInstall -match 'Lo que no se corrige va a una fila del plan') 'the global section sends unfixed findings to a plan row'
 Assert-True ($claudeMdAfterInstall -notmatch 'Sin tope de rondas') 'the old unbounded-rounds rule is gone'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('init-repo.ps1')) 'the section mentions init-repo.ps1 for repos without a quality kit yet'
