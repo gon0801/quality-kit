@@ -192,9 +192,10 @@ function Invoke-HealRepo {
 }
 
 function Invoke-CrossReviewDryRun {
-    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '')
+    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '', [string]$Desde = '')
     $scriptArgs = @('-Con', $Con, '-RepoPath', $RepoPath, '-DryRun')
     if ($Alcance -ne '') { $scriptArgs += @('-Alcance', $Alcance) }
+    if ($Desde -ne '') { $scriptArgs += @('-Desde', $Desde) }
     if ($Excluir -ne '') { $scriptArgs += @('-Excluir', $Excluir) }
     # Un solo string (posiblemente con comas), igual que como llega desde
     # 'powershell -File' en el mundo real -- el split lo hace el script.
@@ -290,6 +291,10 @@ Assert-True ($pyClaudeMd -match 'JAMAS') 'the Calidad section states the never-b
 Assert-True ($pyClaudeMd -match 'pytest -x -q') 'the Calidad section documents the exact pytest pre-push command'
 Assert-True ($pyClaudeMd -match 'commit, push o CI ya validaron') 'the managed Calidad section reuses checks already run by hooks or CI on the same SHA'
 Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
+Assert-True ($pyAgentsMd -match 'Solo un hallazgo bloqueante') 'the generated AGENTS.md reopens a review only for a blocking finding'
+Assert-True ($pyAgentsMd -match 'Tope: 2 rondas') 'the generated AGENTS.md caps review rounds at two'
+Assert-True ($pyAgentsMd -match [regex]::Escape('cross-review -Con <otro revisor> -Desde <sha>')) 'the generated AGENTS.md gives a runnable second-round command, with the mandatory -Con'
+Assert-True ($pyAgentsMd -match 'va a una fila del plan') 'the generated AGENTS.md sends what is not fixed to a plan row'
 Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
 Assert-True ($pyClaudeMd -match '8\. CI: la bateria completa corre en jobs paralelos cuya union es la bateria') 'the Calidad section includes rule 8 (CI paralelo), summarized, for hosts that do not read the global rules'
 Assert-True ($pyClaudeMd -match 'nunca se recorta ni se saltea por tipo de cambio') 'rule 8 in Calidad says the battery is never trimmed or skipped by change type'
@@ -754,6 +759,49 @@ Assert-True ($rLast.ExitCode -eq 0) '-Alcance last-commit works even though this
 
 $rDefault = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'kimi'
 Assert-True ($rDefault.Stdout -match [regex]::Escape('Alcance: combinado')) 'omitting -Alcance defaults to the combined (staged + working) label'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3b-desde: cross-review.ps1 -Desde reviews ONLY the fixes of a previous round ==='
+# Regla 4: la segunda ronda revisa solo el diff de los arreglos. Un commit
+# "ronda 1" (lo que vio la primera ronda) y despues un arreglo en otro archivo:
+# -Desde <ronda1> tiene que mandar el arreglo y NO lo que ya estaba revisado.
+$desdeRepo = New-FakeGitRepo -Name 'fake-desde-repo'
+Write-Utf8NoBomFile -Path (Join-Path $desdeRepo 'revisado.py') -Content "CODIGO_YA_REVISADO = 1`n"
+Push-Location -LiteralPath $desdeRepo
+try {
+    Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'ronda 1')
+    $shaRonda1 = (& git rev-parse HEAD).Trim()
+} finally { Pop-Location }
+Write-Utf8NoBomFile -Path (Join-Path $desdeRepo 'arreglo.py') -Content "ARREGLO_DE_LA_RONDA = 2`n"
+Push-Location -LiteralPath $desdeRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'arreglo') } finally { Pop-Location }
+$rDesde = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde $shaRonda1
+Assert-True ($rDesde.ExitCode -eq 0) '-Desde <sha> runs' "exit=$($rDesde.ExitCode) stderr=$($rDesde.Stderr)"
+Assert-True ($rDesde.Stdout -match [regex]::Escape("Alcance: desde $shaRonda1")) '-Desde is reflected in the output label'
+Assert-True ($rDesde.Stdout -match 'SOLO los arreglos de una ronda de revision anterior') '-Desde tells the reviewer to judge only the fixes'
+$tempDesde = [regex]::Match($rDesde.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
+Assert-True ($tempDesde.Success) '-Desde run references a temp diff file'
+if ($tempDesde.Success) {
+    $desdePath = Join-Path ([System.IO.Path]::GetTempPath()) $tempDesde.Value
+    $desdeDiff = Read-TextFile -Path $desdePath
+    Assert-True ($desdeDiff -match 'ARREGLO_DE_LA_RONDA') 'the -Desde diff carries the fix made after the first round'
+    Assert-True ($desdeDiff -notmatch 'CODIGO_YA_REVISADO') 'the -Desde diff does NOT resend code the first round already reviewed'
+    Remove-Item -LiteralPath $desdePath -Force -ErrorAction SilentlyContinue
+}
+$rDesdeYAlcance = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde $shaRonda1 -Alcance 'staged'
+Assert-True ($rDesdeYAlcance.ExitCode -ne 0) '-Desde together with -Alcance is refused' "exit=$($rDesdeYAlcance.ExitCode)"
+Assert-True (($rDesdeYAlcance.Stdout + $rDesdeYAlcance.Stderr) -match 'no se combinan') 'the refusal says -Desde and -Alcance do not combine'
+$rDesdeMalo = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde 'no-es-un-commit'
+Assert-True ($rDesdeMalo.ExitCode -ne 0) 'a -Desde that is not a commit is refused before calling any reviewer' "exit=$($rDesdeMalo.ExitCode)"
+Assert-True (($rDesdeMalo.Stdout + $rDesdeMalo.Stderr) -match 'no es un commit') 'the refusal names the bad -Desde'
+# Sobre $rLast (el ultimo commit de $pyRepo, nunca vacio): una corrida sin diff
+# sale antes de armar el pedido y las comprobaciones negativas pasarian sin
+# mirar nada. La primera asercion fija que el pedido existe.
+Assert-True ($rLast.Stdout -match 'Actua como revisor de codigo externo') 'sanity: the first-round run did build a reviewer prompt'
+Assert-True ($rLast.Stdout -match 'BLOQUEANTE o NO BLOQUEANTE') 'the reviewer prompt asks to mark every finding BLOQUEANTE or NO BLOQUEANTE'
+Assert-True ($rLast.Stdout -match 'sin reproduccion va como NO BLOQUEANTE') 'a blocking finding needs a reproduction'
+Assert-True ($rLast.Stdout -notmatch 'alta/media/baja') 'the old alta/media/baja severity scale is gone from the prompt'
+Assert-True ($rLast.Stdout -notmatch 'SOLO los arreglos de una ronda') 'a first-round review does not get the second-round clause'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 3c: cross-review.ps1 caps an oversized diff at ~60KB with a truncation notice ==='
@@ -2020,7 +2068,12 @@ Assert-True ($claudeMdAfterInstall -match 'pruebas focalizadas') 'the global sec
 Assert-True ($claudeMdAfterInstall -match 'bateria completa una sola vez') 'the global section limits the full battery to one final run'
 Assert-True ($claudeMdAfterInstall -match 'commit, push o CI ya validaron') 'the global section reuses hook and CI evidence for an unchanged SHA'
 Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the global section consolidates review findings into one round'
-Assert-True ($claudeMdAfterInstall -match 'observacion tardia menor') 'the global section prevents minor late findings from reopening the cycle'
+Assert-True ($claudeMdAfterInstall -match 'observacion tardia no bloqueante va a una fila del plan') 'the global section sends a late non-blocking finding to a plan row instead of reopening the cycle'
+Assert-True ($claudeMdAfterInstall -match 'Solo un hallazgo BLOQUEANTE abre otra ronda') 'the global section reopens a review only for a blocking finding'
+Assert-True ($claudeMdAfterInstall -match 'Tope: 2 rondas') 'the global section caps review rounds at two'
+Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review -Con <otro revisor> -Desde')) 'the global second-round command carries the mandatory -Con'
+Assert-True ($claudeMdAfterInstall -match 'Lo que no se corrige va a una fila del plan') 'the global section sends unfixed findings to a plan row'
+Assert-True ($claudeMdAfterInstall -notmatch 'Sin tope de rondas') 'the old unbounded-rounds rule is gone'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('init-repo.ps1')) 'the section mentions init-repo.ps1 for repos without a quality kit yet'
 Assert-True ($claudeMdAfterInstall -match '8\. CI: la bateria completa corre en jobs paralelos cuya union es la bateria') 'rule 8 is present with the exact opening required by the kit'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('SAIKIT_SHARD=i/N')) 'rule 8 names the bash shard form SAIKIT_SHARD=i/N'
