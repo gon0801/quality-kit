@@ -89,13 +89,27 @@ param(
     # 'auto' = probar la cadena claude -> glm -> grok -> kimi -> qwen -> codex
     # (el cerebro mas fuerte primero) y usar el primero que responda,
     # saltando -Excluir.
+    #
+    # SIN conjunto cerrado: revisar lo puede CUALQUIER modelo distinto al que implemento.
+    # Esa es la unica condicion. Los seis de la cadena son los que este script sabe INVOCAR
+    # hoy, que es otra cosa: si pasas uno que no sabe invocar, muere con "CLI desconocido"
+    # y te dice cuales conoce, en vez de abortar por validacion de parametro sin explicar
+    # nada. Hasta el 2026-09-18 el conjunto cerrado se leia como la lista de quien tiene
+    # permiso de revisar, y con medio proveedor sin cuota eso dejaba la rotacion sin a
+    # quien rotar.
     [Parameter(Mandatory = $true)]
-    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm', 'auto')]
     [string]$Con,
 
     # La IA que ESCRIBIO el cambio, para saltarla en la cadena de 'auto':
     # una IA no debe revisar su propio trabajo.
-    [ValidateSet('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm', '')]
+    #
+    # SIN conjunto cerrado, a proposito. Quien implementa puede ser CUALQUIER modelo --
+    # muse, cursor, deepseek, uno que se sume manana -- y el nombre del implementador tiene
+    # que poder decirse siempre. Con el ValidateSet que estuvo aqui hasta el 2026-09-18,
+    # `-Excluir muse` abortaba por validacion de parametro, asi que una tarea escrita por
+    # muse se mandaba con `-Excluir ''`: la guardia de auto-revision (`-Excluir -eq -Con`)
+    # no podia dispararse nunca para esos modelos. Un nombre que no esta en la cadena
+    # simplemente no filtra nada, que es inofensivo; no poder nombrarlo, no lo es.
     [string]$Excluir = '',
 
     [ValidateSet('staged', 'working', 'last-commit')]
@@ -370,7 +384,9 @@ function Get-CliInvocation {
         $cliArgsText = "-p $escapedPrompt -y -o text"
         $resolved = Resolve-CliExePath -Name 'qwen'
     } else {
-        throw "CLI desconocido: $Con"
+        # No es "no tienes permiso de revisar": cualquier modelo distinto al implementador
+        # puede. Es que este script todavia no sabe con que banderas se llama a ese CLI.
+        throw "CLI desconocido: '$Con'. Este script sabe invocar hoy: claude, glm (zcode), grok, kimi, qwen, codex. Cualquier otro modelo puede revisar -- falta agregarle aqui su invocacion medida (muse, cursor, dsh y deepseek no usan '-p' como los demas)."
     }
     if ($resolved -match '\.(cmd|bat)$') {
         # cmd.exe's own "/c" parsing needs an EXTRA outer pair of quotes
