@@ -71,7 +71,8 @@ Que hace:
 - Agrega una seccion "Calidad" a `CLAUDE.md` y `AGENTS.md` del repo
   (los crea si no existen), con los comandos exactos, las reglas de hierro
   y el flujo que limita cada bloque a una ronda consolidada de revision
-  (otra solo por un hallazgo bloqueante, tope 2, lo demas a una fila del plan),
+  (otra solo mientras salgan bloqueantes, cada una sobre los arreglos; lo
+  demas a una fila del plan),
   una bateria completa sobre el commit final y un checklist de deploy.
 
 Se puede correr mas de una vez sin problema: nunca pisa una configuracion
@@ -325,11 +326,14 @@ con estas reglas:
    cambios delicados, sugerir revision cruzada
    (`cross-review.ps1`). Solo un hallazgo BLOQUEANTE (seguridad, datos, una
    regla innegociable, el comportamiento pedido roto o una prueba que no
-   discrimina), con el comando que lo reproduce, abre otra ronda. La segunda
-   revisa solo el diff de los arreglos (`-Con <otro revisor> -Desde <sha>`). Tope: 2 rondas; una
-   tercera solo si la segunda hallo un bloqueante creado por el arreglo de la
-   primera, y despues decide el operador. Lo que no se corrige va a una fila
-   del plan y se nombra en el PR.
+   discrimina), con el comando que lo reproduce, abre otra ronda. Cada ronda
+   despues de la primera revisa solo el diff de los arreglos de la anterior
+   (`-Con <otro revisor> -Desde <sha>`). Se repite mientras una ronda traiga
+   un bloqueante y para en la primera que no traiga ninguno; si el mismo
+   bloqueante vuelve en dos rondas seguidas, el arreglo no converge y decide
+   el operador. Un bloqueante nunca va a una fila del plan ni se mergea
+   abierto. Lo no bloqueante que no se corrige va a una fila del plan y se
+   nombra en el PR.
 5. Una observacion tardia no bloqueante va a una fila del plan y no reabre el
    ciclo; el checklist posterior al deploy se ejecuta una sola vez mientras el
    SHA no cambie.
