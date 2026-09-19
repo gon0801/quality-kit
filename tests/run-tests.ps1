@@ -293,6 +293,8 @@ Assert-True ($pyClaudeMd -match 'commit, push o CI ya validaron') 'the managed C
 Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
 Assert-True ($pyAgentsMd -match 'Solo un hallazgo bloqueante') 'the generated AGENTS.md reopens a review only for a blocking finding'
 Assert-True ($pyAgentsMd -match 'para en la primera ronda sin ninguno') 'the generated AGENTS.md keeps reviewing while blockers appear and stops at the first round without one'
+Assert-True ($pyAgentsMd -match 'Se repite mientras salga un bloqueante') 'the generated AGENTS.md keeps reviewing while blockers remain'
+Assert-True ($pyAgentsMd -match 'Lo no bloqueante que no se corrige va a una fila del plan') 'the generated AGENTS.md tracks uncorrected non-blockers in the plan'
 Assert-True ($pyAgentsMd -match 'si el mismo bloqueante vuelve en dos rondas seguidas') 'the generated AGENTS.md stops a fix that does not converge'
 Assert-True ($pyAgentsMd -match 'Un bloqueante nunca va a una fila del plan ni se mergea abierto') 'the generated AGENTS.md never parks a blocker in the plan nor merges it open'
 Assert-True ($pyAgentsMd -notmatch 'Tope: 2 rondas') 'the generated AGENTS.md has no fixed round cap'
