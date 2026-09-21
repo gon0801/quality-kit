@@ -302,7 +302,13 @@ Assert-True ($pyAgentsMd -match [regex]::Escape('cross-review -Con <otro revisor
 Assert-True ($pyAgentsMd -match 'va a una fila del plan') 'the generated AGENTS.md sends what is not fixed to a plan row'
 Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
 Assert-True ($pyClaudeMd -match '8\. CI: la bateria completa corre en jobs paralelos cuya union es la bateria') 'the Calidad section includes rule 8 (CI paralelo), summarized, for hosts that do not read the global rules'
-Assert-True ($pyClaudeMd -match 'nunca se recorta ni se saltea por tipo de cambio') 'rule 8 in Calidad says the battery is never trimmed or skipped by change type'
+Assert-True ($pyClaudeMd -match 'SAIKIT_SHARD=i/N') 'rule 8 in Calidad names the shard form SAIKIT_SHARD=i/N, consistent with the global rule'
+Assert-True ($pyClaudeMd -match 'clasificacion de ARCHIVOS') 'rule 8 in Calidad routes the fast lane by FILE classification, not by change type'
+Assert-True ($pyClaudeMd -match 'allowlist versionada') 'rule 8 in Calidad ties fast to the versioned allowlist'
+Assert-True ($pyClaudeMd -match 'JAMAS pasan como fast') 'rule 8 in Calidad is fail-closed: failure or missing classification never passes as fast'
+Assert-True ($pyClaudeMd -notmatch 'se saltea por\s+tipo de cambio') 'rule 8 in Calidad drops the old blanket no-skip-by-change-type wording that contradicted the fast lane'
+Assert-True ($pyClaudeMd -match 'por SHA final del bloque de CODIGO') 'the Calidad verification flow pays the battery once per final SHA of a CODE block, consistent with global rule 3'
+Assert-True ($pyClaudeMd -match 'exclusivamente fast pagan los checks documentales') 'the Calidad verification flow charges all-fast blocks only documental checks, consistent with global rule 3'
 Assert-True (([regex]::Matches($pyClaudeMd, '8\. CI:')).Count -eq 1) 'rule 8 appears exactly once in the generated CLAUDE.md Calidad section'
 
 $hygieneInstaller = Read-TextFile -Path $InstallRepoHygieneScript
@@ -2070,7 +2076,8 @@ Assert-True ($claudeMdAfterInstall -match 'REGLAS DE CALIDAD') 'install-ai-rules
 Assert-True ($claudeMdAfterInstall -match 'JAMAS') 'the section states the never-bypass-hooks rule'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review.ps1')) 'the section mentions cross-review.ps1 for delicate changes'
 Assert-True ($claudeMdAfterInstall -match 'pruebas focalizadas') 'the global section limits iteration to focused tests'
-Assert-True ($claudeMdAfterInstall -match 'bateria completa una sola vez') 'the global section limits the full battery to one final run'
+Assert-True ($claudeMdAfterInstall -match 'la bateria completa la ejecuta CI una sola vez, por SHA final del bloque de CODIGO') 'global rule 3: the full battery is CI job, paid once on the final SHA of a CODE block'
+Assert-True ($claudeMdAfterInstall -match 'exclusivamente fast pagan los checks documentales') 'global rule 3: all-fast blocks pay documental checks instead of the battery'
 Assert-True ($claudeMdAfterInstall -match 'commit, push o CI ya validaron') 'the global section reuses hook and CI evidence for an unchanged SHA'
 Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the global section consolidates review findings into one round'
 Assert-True ($claudeMdAfterInstall -match 'observacion tardia no bloqueante va a una fila del plan') 'the global section sends a late non-blocking finding to a plan row instead of reopening the cycle'
@@ -2088,10 +2095,24 @@ Assert-True ($claudeMdAfterInstall -match '8\. CI: la bateria completa corre en 
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('SAIKIT_SHARD=i/N')) 'rule 8 names the bash shard form SAIKIT_SHARD=i/N'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('pytest: `-n auto`')) 'rule 8 names pytest -n auto'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('jest/vitest: `--shard`')) 'rule 8 names jest/vitest --shard'
-Assert-True ($claudeMdAfterInstall -match 'nunca se recorta ni se saltea por\s+tipo de cambio') 'rule 8 forbids trimming or skipping the battery by change type'
+Assert-True ($claudeMdAfterInstall -match 'clasifica POR ARCHIVOS') 'global rule 8: the lane is decided by file classification, never by title or label'
+Assert-True ($claudeMdAfterInstall -match 'allowlist versionada') 'global rule 8: fast covers only allowlisted planning/evidence/closure documents'
+Assert-True ($claudeMdAfterInstall -match 'mixto = bateria completa \+ checks documentales') 'global rule 8: mixed changes pay the full battery plus documental checks'
+Assert-True ($claudeMdAfterInstall -match 'JAMAS pasan como fast') 'global rule 8 is fail-closed: comparison failure, missing classification, failure or cancellation never pass as fast'
+Assert-True ($claudeMdAfterInstall -notmatch 'se saltea por\s+tipo de cambio') 'global rule 8 drops the old blanket no-skip-by-change-type wording (it contradicted the fast lane)'
 Assert-True ($claudeMdAfterInstall -match 'Los checks que leen docs o ledger reales van en un job propio') 'rule 8 puts docs/ledger checkers in their own job'
 Assert-True ($claudeMdAfterInstall -match 'docs/chore/cierre') 'rule 8 states the docs/chore/cierre fast lane'
 Assert-True ($claudeMdAfterInstall -match 'Los cierres de ledger de un bloque van en un solo PR') 'rule 8 requires ledger closures of a block in a single PR'
+# DoD literal (Fase 15): ambos generadores deben producir reglas que no se
+# contradicen -- la misma politica de carril fast por clasificacion de
+# archivos tiene que aparecer en las reglas globales Y en la seccion Calidad
+# que init-repo.ps1 genera por repo.
+$repoSideClaudeMd = Read-TextFile -Path (Join-Path $pyRepo 'CLAUDE.md')
+foreach ($fraseCompartida in @('docs/chore/cierre', 'allowlist versionada', 'JAMAS pasan como fast')) {
+    $enGlobal = ($claudeMdAfterInstall -match [regex]::Escape($fraseCompartida))
+    $enRepo = ($null -ne $repoSideClaudeMd -and $repoSideClaudeMd -match [regex]::Escape($fraseCompartida))
+    Assert-True ($enGlobal -and $enRepo) "both generators (global rules and per-repo Calidad) agree on: $fraseCompartida" "global=$enGlobal repo=$enRepo"
+}
 Assert-True ($claudeMdAfterInstall -match 'JAMAS uses --no-verify') 'rules 1-7 are preserved: rule 1 still forbids --no-verify'
 Assert-True (([regex]::Matches($claudeMdAfterInstall, '8\. CI:')).Count -eq 1) 'rule 8 appears exactly once after the first install' "count=$(([regex]::Matches($claudeMdAfterInstall, '8\. CI:')).Count)"
 $claudeMdLineCount = @($claudeMdAfterInstall -split "`n" | Where-Object { $_ -match 'REGLAS DE CALIDAD|^\d\.|QUALITY-KIT REGLAS' }).Count
@@ -2631,6 +2652,7 @@ Assert-True ($ciPyParYaml -match 'python3 ') 'the gate job invokes python3, whic
 Assert-True ($ciPyParYaml -notmatch '(?m)^\s+python "') 'the gate job does not call bare python (often missing on ubuntu-latest)'
 Assert-True ($ciPyParYaml -match 'stdlib') 'the gate job documents the stdlib-only / no-extra-deps contract for docs/ledger checkers'
 Assert-True ($ciPyParYaml -notmatch 'paths-ignore|paths:') 'the battery is NOT skipped by change type (no path filters)'
+Assert-True ($ciPyParYaml -notmatch 'se saltea por\s+tipo de cambio') 'the workflow comment no longer claims the battery is never skipped by change type (rule 8 routes docs-only changes through the classified fast lane)'
 Assert-True ($ciPyParYaml -notmatch '__PYTEST_CMD__|__NODE_IN_QUALITY_JOB__|__NODE_SHARD_JOB__|__GATE_NEEDS__|__GATE_RESULTS_ENV__|__GATE_RESULTS_FOR__') 'no quality.yml placeholder survives'
 Assert-True ($rCiPyPar.Stdout -match 'CI ya corre la bateria completa') 'pytest -n auto still counts as CI running the full battery (pre-push stays smoke)' "stdout=$($rCiPyPar.Stdout)"
 $ciPyParConfig = Read-TextFile -Path (Join-Path $ciPyPar '.pre-commit-config.yaml')
