@@ -5,9 +5,12 @@
 # locales, o desde una maquina que no los tiene instalados.
 #
 # CI paralelo (regla 8): la bateria corre COMPLETA en cada push/PR, nunca se
-# recorta ni se saltea por tipo de cambio. pytest usa `-n auto` (pytest-xdist)
-# por default. Opt-out por repo: QUALITY_KIT_PYTEST_SERIAL=1 al correr
-# init-repo.ps1 (suites con estado compartido; el workflow queda en `pytest -q`).
+# recorta. El carril fast de la regla 8 (docs/chore/cierre) lo decide una
+# clasificacion POR ARCHIVOS contra una allowlist versionada, fail-closed, en
+# el repo que la implemente; este workflow no filtra nada por tipo de cambio.
+# pytest usa `-n auto` (pytest-xdist) por default. Opt-out por repo:
+# QUALITY_KIT_PYTEST_SERIAL=1 al correr init-repo.ps1 (suites con estado
+# compartido; el workflow queda en `pytest -q`).
 #
 # Gate de docs/ledger: tools/check-*.sh y tools/check_*.py (nombres con
 # docs|ledger|deploy-log|context) corren SIN argumentos y SIN dependencias

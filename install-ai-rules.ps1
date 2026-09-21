@@ -55,7 +55,7 @@ $SectionBody = @'
 
 1. Si el repo tiene candados de commit (pre-commit), correlos antes de dar por terminado -- JAMAS uses --no-verify ni los saltees; si algo falla, se arregla, no se esquiva.
 2. Cada bug que arreglas incluye, en el mismo cambio, una prueba que lo habria atrapado.
-3. Durante la implementacion corre pruebas focalizadas; ejecuta la bateria completa una sola vez por bloque sobre el commit final, preferentemente en CI. Si commit, push o CI ya validaron el mismo SHA, no repitas esos checks manualmente.
+3. Durante la implementacion corre pruebas focalizadas; la bateria completa la ejecuta CI una sola vez, por SHA final del bloque de CODIGO; los bloques exclusivamente fast pagan los checks documentales. Si commit, push o CI ya validaron el mismo SHA, no repitas esos checks manualmente.
 4. Agrupa los hallazgos de revision y corrigelos en una sola ronda por bloque. Para cambios delicados, sugiere una revision cruzada con otra IA: __CROSS_REVIEW__
    Solo un hallazgo BLOQUEANTE abre otra ronda: seguridad, datos, una regla innegociable, el comportamiento pedido roto o una prueba que no discrimina, y siempre con el comando que lo reproduce (sin reproduccion no bloquea). Cada ronda despues de la primera revisa solo el diff de los arreglos de la anterior (cross-review -Con <otro revisor> -Desde <sha que vio la ronda anterior>). Se repite mientras una ronda traiga un bloqueante y para en la primera que no traiga ninguno. Si el mismo bloqueante vuelve en dos rondas seguidas, el arreglo no converge: se para y decide el operador. Un bloqueante nunca va a una fila del plan ni se mergea abierto: se corrige, o se para y decide el operador. Lo no bloqueante no abre ronda: se corrige en la misma si es de una linea y, si no, va a una fila del plan (Plans.md o el tracker del repo) y se nombra en el PR. Cada ronda con un revisor distinto; cada una cuesta ~100-150k tokens.
 5. Una observacion tardia no bloqueante va a una fila del plan; solo un hallazgo bloqueante reabre el ciclo. Despues del deploy ejecuta el checklist una sola vez y reutiliza evidencia valida mientras el SHA no cambie.
@@ -63,11 +63,18 @@ $SectionBody = @'
 7. Higiene de repo (limites de CLAUDE.md/AGENTS.md + sweep de basura): se instala por repo con __REPO_HYGIENE__ -RepoPath <repo>; sweep manual: python tools/check_context_docs.py . --sweep (reporta, no borra).
 8. CI: la bateria completa corre en jobs paralelos cuya union es la bateria
    (con candado); si un job pasa de ~10 min se shardea (bash: `SAIKIT_SHARD=i/N`;
-   pytest: `-n auto`; jest/vitest: `--shard`), nunca se recorta ni se saltea por
-   tipo de cambio. Los checks que leen docs o ledger reales van en un job propio
-   de segundos, separado de la bateria. Carril por tipo de cambio: docs/chore/cierre
-   = fast (bots + lead); codigo = gate (+ reviewer); medicion viva/release = +
-   cross-review. Los cierres de ledger de un bloque van en un solo PR.
+   pytest: `-n auto`; jest/vitest: `--shard`), nunca se recorta. El workflow corre
+   SIEMPRE en cada push y PR, y un job clasifica POR ARCHIVOS (nunca por titulo,
+   etiqueta ni declaracion): docs/chore/cierre = fast SOLO si TODO el cambio esta
+   en la allowlist versionada de documentos de planificacion/evidencia/cierre
+   (bots + lead); codigo/tests/CI/config/skills y cualquier ruta no clasificada =
+   gate con bateria completa; mixto = bateria completa + checks documentales.
+   Fail-closed: comparacion fallida, historial incompleto, clasificador
+   desconocido, fallo o cancelacion JAMAS pasan como fast; el gate distingue
+   omision autorizada de fallo.
+   Los checks que leen docs o ledger reales van en un job propio de segundos,
+   separado de la bateria. Medicion viva/release = + cross-review.
+   Los cierres de ledger de un bloque van en un solo PR.
 '@
 $SectionBody = $SectionBody.Replace('__CROSS_REVIEW__', (Join-Path $QualityKitDir 'cross-review.ps1'))
 $SectionBody = $SectionBody.Replace('__INIT_REPO__', (Join-Path $QualityKitDir 'init-repo.ps1'))
