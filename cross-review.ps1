@@ -600,6 +600,14 @@ if ($Base) {
     if ($LASTEXITCODE -ne 0) {
         throw "-Base: '$Base' no es un commit de este repo ($RepoPath)."
     }
+    # Un -Base que no es ancestro de HEAD con el diff de dos puntos le mandaria
+    # al revisor la INVERSA de los commits de la base que no estan en la rama
+    # (git diff A HEAD es "como pasar de A a HEAD"). <sha> es el merge-base con
+    # la rama base, y ese siempre es ancestro: lo que no lo es, se rechaza.
+    & git -C $RepoPath merge-base --is-ancestor "$Base" 'HEAD' *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "-Base: '$Base' no es ancestro de HEAD en este repo ($RepoPath); el diff de dos puntos mandaria la inversa de commits ajenos. Usa el merge-base: git merge-base HEAD <rama-base>."
+    }
 }
 $alcanceLabelForDisplay = $Alcance
 if ($Desde) { $alcanceLabelForDisplay = "desde $Desde (solo los arreglos)" }

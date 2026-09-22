@@ -772,6 +772,18 @@ Assert-True ($rLast.ExitCode -eq 0) '-Alcance last-commit works even though this
 $rDefault = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'kimi'
 Assert-True ($rDefault.Stdout -match [regex]::Escape('Alcance: combinado')) 'omitting -Alcance defaults to the combined (staged + working) label'
 
+# Sobre $rLast (el ultimo commit de $pyRepo, nunca vacio): una corrida sin diff
+# sale antes de armar el pedido y las comprobaciones negativas pasarian sin
+# mirar nada. La primera asercion fija que el pedido existe. Estas aserciones
+# son del run de -Alcance last-commit de ARRIBA y viven en ESTE grupo: una
+# asercion vieja impresa bajo el encabezado del grupo -Base hace leer el fallo
+# en el grupo equivocado.
+Assert-True ($rLast.Stdout -match 'Actua como revisor de codigo externo') 'sanity: the first-round run did build a reviewer prompt'
+Assert-True ($rLast.Stdout -match 'BLOQUEANTE o NO BLOQUEANTE') 'the reviewer prompt asks to mark every finding BLOQUEANTE or NO BLOQUEANTE'
+Assert-True ($rLast.Stdout -match 'sin reproduccion va como NO BLOQUEANTE') 'a blocking finding needs a reproduction'
+Assert-True ($rLast.Stdout -notmatch 'alta/media/baja') 'the old alta/media/baja severity scale is gone from the prompt'
+Assert-True ($rLast.Stdout -notmatch 'SOLO los arreglos de una ronda') 'a first-round review does not get the second-round clause'
+
 Write-Host ''
 Write-Host '=== TEST GROUP 3b-desde: cross-review.ps1 -Desde reviews ONLY the fixes of a previous round ==='
 # Regla 4: la segunda ronda revisa solo el diff de los arreglos. Un commit
@@ -844,18 +856,32 @@ if ($tempBase.Success) {
 $rBaseYDesde = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaBase -Desde $shaBase
 Assert-True ($rBaseYDesde.ExitCode -ne 0) '-Base together with -Desde is refused' "exit=$($rBaseYDesde.ExitCode)"
 Assert-True (($rBaseYDesde.Stdout + $rBaseYDesde.Stderr) -match 'no se combinan') 'the refusal says -Base and -Desde do not combine'
+$rBaseYAlcance = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaBase -Alcance 'staged'
+Assert-True ($rBaseYAlcance.ExitCode -ne 0) '-Base together with -Alcance is refused' "exit=$($rBaseYAlcance.ExitCode)"
+Assert-True (($rBaseYAlcance.Stdout + $rBaseYAlcance.Stderr) -match 'no se combinan') 'the refusal says -Base and -Alcance do not combine'
 $rBaseMalo = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base 'no-es-un-commit'
 Assert-True ($rBaseMalo.ExitCode -ne 0) 'a -Base that is not a commit is refused' "exit=$($rBaseMalo.ExitCode)"
 Assert-True (($rBaseMalo.Stdout + $rBaseMalo.Stderr) -match 'no es un commit') 'the refusal names the bad -Base'
 
-# Sobre $rLast (el ultimo commit de $pyRepo, nunca vacio): una corrida sin diff
-# sale antes de armar el pedido y las comprobaciones negativas pasarian sin
-# mirar nada. La primera asercion fija que el pedido existe.
-Assert-True ($rLast.Stdout -match 'Actua como revisor de codigo externo') 'sanity: the first-round run did build a reviewer prompt'
-Assert-True ($rLast.Stdout -match 'BLOQUEANTE o NO BLOQUEANTE') 'the reviewer prompt asks to mark every finding BLOQUEANTE or NO BLOQUEANTE'
-Assert-True ($rLast.Stdout -match 'sin reproduccion va como NO BLOQUEANTE') 'a blocking finding needs a reproduction'
-Assert-True ($rLast.Stdout -notmatch 'alta/media/baja') 'the old alta/media/baja severity scale is gone from the prompt'
-Assert-True ($rLast.Stdout -notmatch 'SOLO los arreglos de una ronda') 'a first-round review does not get the second-round clause'
+# Un commit en la base que NO esta en la rama: el diff de dos puntos
+# (git diff <base> HEAD) es "como pasar de <base> a HEAD", asi que mandaria al
+# revisor la INVERSA de ese commit ajeno. <sha> es el merge-base con la rama
+# base y por construction siempre es ancestro: lo que no lo es, se rechaza
+# antes de llamar a nadie.
+$ramaOriginal = ''
+Push-Location -LiteralPath $baseRepo
+try {
+    $ramaOriginal = (& git rev-parse --abbrev-ref HEAD).Trim()
+    Invoke-GitSilent -GitArgs @('checkout', '-q', '-b', 'ajena')
+    Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'ajeno.py') -Content "COMMIT_AJENO = 9`n"
+    Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'commit ajeno fuera de la rama')
+    $shaAjeno = (& git rev-parse HEAD).Trim()
+    Invoke-GitSilent -GitArgs @('checkout', '-q', $ramaOriginal)
+} finally { Pop-Location }
+$rBaseAjena = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaAjeno
+Assert-True ($rBaseAjena.ExitCode -ne 0) 'a -Base whose commit is not an ancestor of HEAD is refused' "exit=$($rBaseAjena.ExitCode) stderr=$($rBaseAjena.Stderr)"
+Assert-True (($rBaseAjena.Stdout + $rBaseAjena.Stderr) -match 'no es ancestro') 'the refusal says the -Base commit is not an ancestor of HEAD'
+Assert-True (($rBaseAjena.Stdout + $rBaseAjena.Stderr) -notmatch [regex]::Escape('COMMIT_AJENO')) 'the refusal never ships the foreign commit to a reviewer'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 3c: cross-review.ps1 caps an oversized diff at ~60KB with a truncation notice ==='
