@@ -7,6 +7,7 @@
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con kimi
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Alcance staged
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con claude -Alcance last-commit
+#   pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Base <sha-de-la-base>
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Desde <sha-de-la-ronda-1>
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con grok
 #   pwsh -NoProfile -File ./cross-review.ps1 -Con qwen
@@ -122,11 +123,16 @@ param(
     # repetidos. Vacio = diff completo del alcance elegido.
     [string[]]$Archivos = @(),
 
+    # Ronda 1 de un bloque de varios commits: git diff <sha> HEAD, el
+    # diff ya commiteado, sin la clausula de arreglos. Excluyente con
+    # -Desde y con -Alcance. <sha> es el merge-base con la rama base.
+    [string]$Base = '',
+
     # Segunda ronda de revision: revisa SOLO lo que cambio desde este commit
     # (el SHA que vio la ronda anterior), no el cambio entero otra vez. Nacio
     # de ciclos de revision que no terminaban: cada ronda re-revisaba todo y
     # traia hallazgos nuevos sobre codigo que no habia cambiado. Excluyente
-    # con -Alcance.
+    # con -Alcance y con -Base.
     [string]$Desde = '',
 
     [string]$RepoPath = (Get-Location).Path,
@@ -161,7 +167,7 @@ function Test-IsGitRepo {
 # ------------------------------------------------------------------
 
 function Get-ReviewDiff {
-    param([string]$RepoPath, [string]$Alcance, [string[]]$FileScope = @(), [string]$Desde = '')
+    param([string]$RepoPath, [string]$Alcance, [string[]]$FileScope = @(), [string]$Desde = '', [string]$Base = '')
     # El separador '--' + pathspecs limita cada diff a los archivos pedidos;
     # con $FileScope vacio, $pathspecArgs queda vacio y los comandos son
     # identicos a los de siempre.
@@ -180,6 +186,11 @@ function Get-ReviewDiff {
         if ($Desde) {
             $lines = @(& git diff $Desde @pathspecArgs 2>&1)
             $label = "SOLO los arreglos desde $Desde (git diff $Desde)"
+        } elseif ($Base) {
+            # Dos commits, no el working tree: un archivo sin commitear no
+            # entra en la ronda 1.
+            $lines = @(& git diff $Base 'HEAD' @pathspecArgs 2>&1)
+            $label = "diff completo del bloque desde $Base hasta HEAD (git diff $Base HEAD)"
         } elseif ($Alcance -eq 'staged') {
             $lines = @(& git diff --cached @pathspecArgs 2>&1)
             $label = 'cambios en stage (git diff --cached)'
@@ -569,6 +580,9 @@ if ($Con -eq 'auto') {
     $chain = @($Con)
 }
 
+if ($Base -and $Desde) {
+    throw "-Base y -Desde no se combinan: -Base es el diff del bloque y -Desde es solo los arreglos."
+}
 if ($Desde) {
     if ($Alcance) {
         throw "-Desde y -Alcance no se combinan: -Desde ya elige el diff (lo que cambio desde ese commit)."
@@ -578,8 +592,18 @@ if ($Desde) {
         throw "-Desde: '$Desde' no es un commit de este repo ($RepoPath)."
     }
 }
+if ($Base) {
+    if ($Alcance) {
+        throw "-Base y -Alcance no se combinan: -Base ya elige el diff del bloque (git diff <sha> HEAD)."
+    }
+    & git -C $RepoPath rev-parse --verify --quiet "$Base^{commit}" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "-Base: '$Base' no es un commit de este repo ($RepoPath)."
+    }
+}
 $alcanceLabelForDisplay = $Alcance
 if ($Desde) { $alcanceLabelForDisplay = "desde $Desde (solo los arreglos)" }
+if ($Base) { $alcanceLabelForDisplay = "bloque desde $Base hasta HEAD" }
 if ([string]::IsNullOrEmpty($alcanceLabelForDisplay)) { $alcanceLabelForDisplay = 'combinado (stage + working)' }
 Write-Host "Alcance: $alcanceLabelForDisplay"
 
@@ -595,7 +619,7 @@ if ($fileScope.Count -gt 0) {
     Write-Host "Archivos (pathspec de la tarea): $($fileScope -join ', ')"
 }
 
-$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope -Desde $Desde
+$diffResult = Get-ReviewDiff -RepoPath $RepoPath -Alcance $Alcance -FileScope $fileScope -Desde $Desde -Base $Base
 
 # git puede FALLAR, y su stderr viene mezclado en el texto del diff (el "2>&1"
 # de arriba es a proposito, para conservar el diagnostico). Sin mirar el codigo

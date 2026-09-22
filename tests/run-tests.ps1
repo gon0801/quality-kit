@@ -192,10 +192,11 @@ function Invoke-HealRepo {
 }
 
 function Invoke-CrossReviewDryRun {
-    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '', [string]$Desde = '')
+    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '', [string]$Desde = '', [string]$Base = '')
     $scriptArgs = @('-Con', $Con, '-RepoPath', $RepoPath, '-DryRun')
     if ($Alcance -ne '') { $scriptArgs += @('-Alcance', $Alcance) }
     if ($Desde -ne '') { $scriptArgs += @('-Desde', $Desde) }
+    if ($Base -ne '') { $scriptArgs += @('-Base', $Base) }
     if ($Excluir -ne '') { $scriptArgs += @('-Excluir', $Excluir) }
     # Un solo string (posiblemente con comas), igual que como llega desde
     # 'powershell -File' en el mundo real -- el split lo hace el script.
@@ -799,6 +800,48 @@ Assert-True (($rDesdeYAlcance.Stdout + $rDesdeYAlcance.Stderr) -match 'no se com
 $rDesdeMalo = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde 'no-es-un-commit'
 Assert-True ($rDesdeMalo.ExitCode -ne 0) 'a -Desde that is not a commit is refused before calling any reviewer' "exit=$($rDesdeMalo.ExitCode)"
 Assert-True (($rDesdeMalo.Stdout + $rDesdeMalo.Stderr) -match 'no es un commit') 'the refusal names the bad -Desde'
+
+Write-Host ''
+Write-Host '=== TEST GROUP 3b-base: cross-review.ps1 -Base reviews the committed block, not a fixes-only round ==='
+# La ronda 1 de un bloque de varios commits tiene que ver git diff <base> HEAD
+# (los dos commits) y NO la clausula de arreglos. Un archivo sin commitear
+# no entra: eso es el working tree, que es lo que hace git diff <sha> a secas.
+$baseRepo = New-FakeGitRepo -Name 'fake-base-repo'
+Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'previo.py') -Content "BASE_PREVIA = 0`n"
+Push-Location -LiteralPath $baseRepo
+try {
+    Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'base')
+    $shaBase = (& git rev-parse HEAD).Trim()
+} finally { Pop-Location }
+Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'bloque.py') -Content "CODIGO_DEL_BLOQUE = 1`n"
+Push-Location -LiteralPath $baseRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'bloque') } finally { Pop-Location }
+Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'sigue.py') -Content "MAS_DEL_BLOQUE = 2`n"
+Push-Location -LiteralPath $baseRepo
+try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'sigue') } finally { Pop-Location }
+Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'ruido.py') -Content "RUIDO_WORKING = 3`n"
+$rBase = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaBase
+Assert-True ($rBase.ExitCode -eq 0) '-Base <sha> runs' "exit=$($rBase.ExitCode) stderr=$($rBase.Stderr)"
+Assert-True ($rBase.Stdout -match [regex]::Escape("Alcance: bloque desde $shaBase hasta HEAD")) '-Base is reflected in the output label'
+Assert-True ($rBase.Stdout -notmatch 'SOLO los arreglos de una ronda') '-Base does not inject the fixes-only clause'
+$tempBase = [regex]::Match($rBase.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
+Assert-True ($tempBase.Success) '-Base run references a temp diff file'
+if ($tempBase.Success) {
+    $basePath = Join-Path ([System.IO.Path]::GetTempPath()) $tempBase.Value
+    $baseDiff = Read-TextFile -Path $basePath
+    Assert-True ($baseDiff -match 'CODIGO_DEL_BLOQUE') 'the -Base diff carries the first commit of the block'
+    Assert-True ($baseDiff -match 'MAS_DEL_BLOQUE') 'the -Base diff carries the later commit of the block'
+    Assert-True ($baseDiff -notmatch 'RUIDO_WORKING') 'the -Base diff does not include uncommitted work'
+    Assert-True ($baseDiff -notmatch 'BASE_PREVIA') 'the -Base diff does not resend the parent commit'
+    Remove-Item -LiteralPath $basePath -Force -ErrorAction SilentlyContinue
+}
+$rBaseYDesde = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaBase -Desde $shaBase
+Assert-True ($rBaseYDesde.ExitCode -ne 0) '-Base together with -Desde is refused' "exit=$($rBaseYDesde.ExitCode)"
+Assert-True (($rBaseYDesde.Stdout + $rBaseYDesde.Stderr) -match 'no se combinan') 'the refusal says -Base and -Desde do not combine'
+$rBaseMalo = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base 'no-es-un-commit'
+Assert-True ($rBaseMalo.ExitCode -ne 0) 'a -Base that is not a commit is refused' "exit=$($rBaseMalo.ExitCode)"
+Assert-True (($rBaseMalo.Stdout + $rBaseMalo.Stderr) -match 'no es un commit') 'the refusal names the bad -Base'
+
 # Sobre $rLast (el ultimo commit de $pyRepo, nunca vacio): una corrida sin diff
 # sale antes de armar el pedido y las comprobaciones negativas pasarian sin
 # mirar nada. La primera asercion fija que el pedido existe.
