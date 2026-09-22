@@ -226,6 +226,10 @@ pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engi
   diff queda chico y los hallazgos relevantes. Combinable con `-Alcance`.
   OJO: una ruta mal tipeada da diff vacio en silencio; por eso el mensaje
   de "no hay diferencias" nombra el scope pedido, para que el typo se vea.
+- `-Base <sha>` (opcional): la ronda 1 de un bloque. Manda `git diff <sha> HEAD`
+  (lo ya commiteado entre ese commit y HEAD; un archivo sin commitear no
+  entra) y NO le dice al revisor que juzgue solo arreglos. `<sha>` es el
+  merge-base con la rama base. No se combina con `-Desde` ni con `-Alcance`.
 - `-Desde <sha>` (opcional): la segunda ronda. Revisa SOLO lo que cambio
   desde ese commit (`git diff <sha>`: lo commiteado despues y lo que falta
   commitear), es decir los arreglos de la ronda anterior, y le pide al
