@@ -229,7 +229,11 @@ pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engi
 - `-Base <sha>` (opcional): la ronda 1 de un bloque. Manda `git diff <sha> HEAD`
   (lo ya commiteado entre ese commit y HEAD; un archivo sin commitear no
   entra) y NO le dice al revisor que juzgue solo arreglos. `<sha>` es el
-  merge-base con la rama base. No se combina con `-Desde` ni con `-Alcance`.
+  merge-base con la rama base. No se combina con `-Desde` ni con `-Alcance`;
+  si el sha no es un commit del repo o no es ancestro de HEAD, corta antes de
+  llamar a nadie: con el diff de dos puntos, un base que no es ancestro le
+  mandaria al revisor la inversa de commits ajenos (usa `git merge-base HEAD
+  <rama-base>`).
 - `-Desde <sha>` (opcional): la segunda ronda. Revisa SOLO lo que cambio
   desde ese commit (`git diff <sha>`: lo commiteado despues y lo que falta
   commitear), es decir los arreglos de la ronda anterior, y le pide al
