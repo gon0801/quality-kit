@@ -143,7 +143,16 @@ param(
     # siguiente candidato. 0 = sin tope (no recomendado). Nota honesta: el
     # tope efectivo puede excederse ~35 s (30 s del write de stdin + 5 s de
     # drenado post-kill); es un tope practico, no un deadline exacto.
-    [int]$TimeoutSec = 300,
+    #
+    # -1 (default) = AUTOMATICO segun el tamano del diff. El 300 fijo de antes
+    # no escalaba con los 60 000 caracteres que este script esta dispuesto a
+    # mandar, y el resultado era lo peor de los dos mundos: la revision se
+    # mataba a mitad y el token ya estaba gastado, sin veredicto.
+    # Medido el 2026-09-26 con codex/gpt-5.6-sol en goncloud-hermes:
+    #   diff de 32 caracteres  -> 35 s, veredicto correcto
+    #   diff de 48 981         -> NO alcanzo ni con 1200 s (exit 124, sin nada)
+    # De ahi la rampa de abajo. Un numero explicito sigue mandando.
+    [int]$TimeoutSec = -1,
 
     [switch]$DryRun
 )
@@ -664,6 +673,20 @@ if ([string]::IsNullOrWhiteSpace($diffResult.Diff) -or (-not $hasRealChanges)) {
 
 $cappedDiff = Get-CappedDiff -Diff $diffResult.Diff -MaxChars $MaxDiffChars
 Write-Host "Tamano del diff: $($diffResult.Diff.Length) caracteres $(if ($diffResult.Diff.Length -gt $MaxDiffChars) { '(truncado a ' + $MaxDiffChars + ')' })"
+
+# Tope automatico proporcional al diff (ver la nota de -TimeoutSec). Se anuncia
+# siempre: un tope invisible que corta a mitad es el peor de los fallos, porque
+# consume el token y no deja veredicto.
+if ($TimeoutSec -lt 0) {
+    $kb = [Math]::Ceiling($cappedDiff.Length / 1024)
+    $TimeoutSec = [Math]::Min(1800, 300 + (30 * $kb))
+    Write-Host "Tope automatico para este diff (~$kb KB): $TimeoutSec s. Usa -TimeoutSec para fijarlo a mano."
+}
+if ($cappedDiff.Length -gt 20000) {
+    Write-Host ''
+    Write-Host "==> AVISO: el diff es grande ($($cappedDiff.Length) caracteres). Una revision asi cuesta del orden de 100-200k tokens y varios minutos. Si solo te interesa parte del cambio, acotalo con -Archivos <pathspecs> en vez de mandarlo entero."
+    Write-Host ''
+}
 
 $repoName = Get-RepoName -RepoPath $RepoPath
 $tempDiffPath = Join-Path ([System.IO.Path]::GetTempPath()) ("quality-kit-review-" + [Guid]::NewGuid().ToString('N') + '.txt')
