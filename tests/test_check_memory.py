@@ -20,7 +20,7 @@ class CheckMemoryTests(unittest.TestCase):
 
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--auto"],
-                env={**os.environ, "HOME": home},
+                env={**os.environ, "HOME": home, "USERPROFILE": home},
                 text=True,
                 capture_output=True,
                 check=False,
@@ -120,6 +120,103 @@ class CheckMemoryTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("1 links rotos", result.stdout)
             self.assertIn("missing.md", result.stdout)
+
+    def test_index_ignores_code_links_but_finds_real_orphan(self):
+        with tempfile.TemporaryDirectory() as root:
+            memory = Path(root) / "memory"
+            memory.mkdir()
+            (memory / "MEMORY.md").write_text(
+                "`[Missing](missing.md)`\n```md\n[Note](note.md)\n```\n",
+                encoding="utf-8",
+            )
+            (memory / "note.md").write_text("A real note.\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--auto", "--dir", str(memory)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("1 huérfanos", result.stdout)
+            self.assertIn("0 links rotos", result.stdout)
+
+    def test_index_accepts_link_titles(self):
+        with tempfile.TemporaryDirectory() as root:
+            memory = Path(root) / "memory"
+            memory.mkdir()
+            (memory / "MEMORY.md").write_text(
+                '- [Note](note.md "title")\n', encoding="utf-8"
+            )
+            (memory / "note.md").write_text("A real note.\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--auto", "--dir", str(memory)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+
+    def test_auto_ignores_multiline_inline_code(self):
+        with tempfile.TemporaryDirectory() as root:
+            memory = Path(root) / "memory"
+            memory.mkdir()
+            (memory / "MEMORY.md").write_text("- [Note](note.md)\n", encoding="utf-8")
+            (memory / "note.md").write_text(
+                "Example: `one\n[[missing]]\ntwo`\n", encoding="utf-8"
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--auto", "--dir", str(memory)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+
+    def test_auto_continues_when_one_project_cannot_be_read(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        import check_memory
+
+        with tempfile.TemporaryDirectory() as root:
+            first = Path(root) / ".claude/projects/first/memory"
+            second = Path(root) / ".claude/projects/second/memory"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            (second / "MEMORY.md").write_text("- [Note](note.md)\n", encoding="utf-8")
+            (second / "note.md").write_text("A real note.\n", encoding="utf-8")
+            scan = check_memory.scan_memory
+
+            def scan_with_unreadable_project(path):
+                if path == first:
+                    raise PermissionError("access denied")
+                return scan(path)
+
+            output = StringIO()
+            with (
+                patch.object(sys, "argv", ["check_memory.py", "--auto"]),
+                patch.object(Path, "home", return_value=Path(root)),
+                patch.object(
+                    check_memory,
+                    "scan_memory",
+                    side_effect=scan_with_unreadable_project,
+                ),
+                redirect_stdout(output),
+            ):
+                result = check_memory.main()
+
+            self.assertEqual(result, 0)
+            self.assertIn("first/memory", output.getvalue())
+            self.assertNotIn("second/memory", output.getvalue())
 
 
 if __name__ == "__main__":

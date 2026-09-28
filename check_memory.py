@@ -27,6 +27,24 @@ from pathlib import Path
 LIMIT_LINES = 40
 
 
+def prose_text(text: str) -> str:
+    lines = []
+    fence = None
+    for line in text.splitlines():
+        marker = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            run, rest = marker.groups()
+            if fence is None:
+                fence = (run[0], len(run))
+                continue
+            if run[0] == fence[0] and len(run) >= fence[1] and not rest.strip():
+                fence = None
+                continue
+        if fence is None:
+            lines.append(line)
+    return re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", "\n".join(lines), flags=re.DOTALL)
+
+
 @dataclass
 class MemoryReport:
     directory: Path
@@ -57,28 +75,17 @@ def scan_memory(mem_dir: Path) -> MemoryReport:
     ]
     big.sort(key=lambda x: -x[1])
 
-    index_targets = re.findall(r"\]\((?:\./)?([^)#\s]+\.md)(?:#[^)]*)?\)", idx_txt)
+    index_targets = re.findall(
+        r"\]\((?:\./)?([^)#\s]+\.md)(?:#[^\s)]*)?(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)",
+        prose_text(idx_txt),
+    )
     linked = {os.path.basename(t) for t in index_targets}
     orphans = [n for n in files if n != "MEMORY.md" and n not in linked]
 
     broken = []
     for n in files:
         txt = (mem_dir / n).read_text(encoding="utf-8")
-        prose = []
-        fence = None
-        for line in txt.splitlines():
-            marker = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", line)
-            if marker:
-                run, rest = marker.groups()
-                if fence is None:
-                    fence = (run[0], len(run))
-                    continue
-                if run[0] == fence[0] and len(run) >= fence[1] and not rest.strip():
-                    fence = None
-                    continue
-            if fence is None:
-                prose.append(re.sub(r"(?<!`)(`+)(?!`).*?\1(?!`)", "", line))
-        for m in re.findall(r"\[\[([^\]\[]+)\]\]", "\n".join(prose)):
+        for m in re.findall(r"\[\[([^\]\[]+)\]\]", prose_text(txt)):
             if not (mem_dir / (m + ".md")).exists():
                 broken.append(f"{n}: [[{m}]]")
     for m in index_targets:
@@ -115,7 +122,13 @@ def main() -> int:
             print("No se encontraron directorios de memoria.")
         return 0
 
-    reports = [scan_memory(d) for d in directories]
+    reports = []
+    errors = []
+    for directory in directories:
+        try:
+            reports.append(scan_memory(directory))
+        except (OSError, UnicodeError) as exc:
+            errors.append(f"{directory}: {exc}")
     big = [
         (r.directory.parent.name, name, lines) for r in reports for name, lines in r.big
     ]
@@ -125,6 +138,10 @@ def main() -> int:
     problems = len(big) + len(orphans) + len(broken)
 
     if args.auto:
+        if errors:
+            print(
+                f"MEMORY-SWEEP: {len(errors)} directorios sin leer | primero: {errors[0]}"
+            )
         if problems == 0:
             return 0
         line = f"MEMORY-SWEEP: {len(big)} >{LIMIT_LINES}L, {len(orphans)} huérfanos, {len(broken)} links rotos"
@@ -150,7 +167,9 @@ def main() -> int:
     print(f"  Links rotos: {len(broken)}")
     for directory, name in broken[:10]:
         print(f"    {directory}/{name}")
-    return 0 if problems == 0 else 1
+    for error in errors:
+        print(f"  Error de lectura: {error}")
+    return 0 if problems == 0 and not errors else 1
 
 
 if __name__ == "__main__":

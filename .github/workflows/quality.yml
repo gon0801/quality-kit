@@ -29,7 +29,7 @@ jobs:
         shell: pwsh
         run: ./tests/validate-syntax.ps1
       - name: Probar portabilidad
-        run: python -m unittest tests/test_quality_run_python_tests.py tests/test_macos_portability.py
+        run: python -m unittest tests/test_quality_run_python_tests.py tests/test_macos_portability.py tests/test_check_memory.py
       - name: Preparar stubs de CLI para DryRun
         shell: pwsh
         run: |
