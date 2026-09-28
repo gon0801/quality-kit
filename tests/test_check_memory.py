@@ -215,8 +215,8 @@ class CheckMemoryTests(unittest.TestCase):
                 result = check_memory.main()
 
             self.assertEqual(result, 0)
-            self.assertIn("first/memory", output.getvalue())
-            self.assertNotIn("second/memory", output.getvalue())
+            self.assertIn(str(first), output.getvalue())
+            self.assertNotIn(str(second), output.getvalue())
 
 
 if __name__ == "__main__":
