@@ -56,12 +56,16 @@ def main(argv: list[str] | None = None) -> int:
 
     raiz = Path.cwd().resolve()
     directorio = (raiz / conocidos.cwd).resolve()
-    if not directorio.is_dir() or (directorio != raiz and raiz not in directorio.parents):
+    if not directorio.is_dir() or (
+        directorio != raiz and raiz not in directorio.parents
+    ):
         parser.error("--cwd debe ser un directorio dentro del repositorio")
 
     for comando in _comandos_candidatos(raiz):
         if _admite_modulo(comando, conocidos.modulo, raiz):
-            return subprocess.call([*comando, "-m", conocidos.modulo, *argumentos], cwd=directorio)
+            return subprocess.call(
+                [*comando, "-m", conocidos.modulo, *argumentos], cwd=directorio
+            )
 
     print(
         f"quality-kit: no se encontro un Python capaz de importar {conocidos.modulo}",
