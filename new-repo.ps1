@@ -6,7 +6,7 @@
 #   2. install-repo-hygiene.ps1 -> candado de capa de contexto (CLAUDE.md/AGENTS.md)
 #                                  + sweep de basura
 #
-# Lo global (reglas de IA, cross-review, harness de SummonAI) NO se toca aqui:
+# Lo global (reglas de IA, harness de SummonAI) NO se toca aqui:
 # ya esta instalado a nivel usuario y aplica solo. Este script es lo unico que
 # hay que correr al crear/adoptar un repo.
 #

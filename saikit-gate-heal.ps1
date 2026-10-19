@@ -738,8 +738,8 @@ function Invoke-RegistrationCheck {
     #   1. TOPE DE TIEMPO. Este script corre en CADA SessionStart y hasta ahora
     #      no lanzaba ningun proceso externo. Ahora lanza bash, que lanza
     #      python: si cualquiera de los dos se cuelga, se come el presupuesto
-    #      del arranque. Mismo motivo por el que cross-review.ps1 tiene
-    #      -TimeoutSec desde un cuelgue real (2026-07-05). Los parches ya estan
+    #      del arranque. De ahi el -RegistrationTimeoutSec de este script,
+    #      nacido de un cuelgue real (2026-07-05). Los parches ya estan
     #      escritos cuando se llega aca, asi que cortar no pierde trabajo.
     #   2. EXIT CODE. Un exit != 0 de un ejecutable nativo NO lanza excepcion en
     #      PowerShell: con `&` y try/catch, un verificador que muere sin decir
