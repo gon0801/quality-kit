@@ -1,6 +1,6 @@
 # quality-kit
 
-Cinco capas de calidad que se suman a lo que ya tenes con SummonAI Kit
+Cuatro capas de calidad que se suman a lo que ya tenes con SummonAI Kit
 (Claude Code, Kimi Code) y a cualquier otra IA que uses (Codex), para que
 todo lo que se construya en tus repos quede protegido de la misma forma sin
 importar que IA lo escribio:
@@ -16,10 +16,7 @@ importar que IA lo escribio:
    corriendo en GitHub Actions, para el dia que empieces a subir tus repos
    a GitHub. Mientras un repo sea solo local, esta capa queda "dormida"
    (no hay nada que romper ni que mantener).
-4. **Revision cruzada entre IAs** (`cross-review.ps1`): para un cambio
-   delicado, le pedis a una IA DISTINTA de la que escribio el cambio que lo
-   revise con ojos frescos, de forma independiente.
-5. **Auditoria de documentacion** (`docs-groom`, una skill para las 3 IAs):
+4. **Auditoria de documentacion** (`docs-groom`, una skill para las 3 IAs):
    limpia y reorganiza `CLAUDE.md`/`AGENTS.md`/`docs/` cuando se van
    llenando de contenido viejo o repetido, sin tocar nunca los bloques que
    ya administran otras herramientas (este kit incluido).
@@ -150,161 +147,6 @@ ese workflow aparece solo, protegiendo el repo tambien en la nube: cualquier
 push o pull request corre los mismos chequeos, incluso si viniera de una
 maquina sin estos candados instalados.
 
-## 4. Revision cruzada entre IAs -- `cross-review.ps1`
-
-Para un cambio delicado (algo que te preocupa, algo grande, algo tocando
-dinero o datos sensibles), pedile a una IA DISTINTA que revise el trabajo
-de la que lo escribio -- una segunda opinion independiente y con ojos
-frescos, no la misma IA revisandose a si misma.
-
-```
-pwsh -NoProfile -File ./cross-review.ps1 -Con kimi
-pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Alcance staged
-pwsh -NoProfile -File ./cross-review.ps1 -Con claude -Alcance last-commit
-pwsh -NoProfile -File ./cross-review.ps1 -Con codex -Desde <sha-de-la-ronda-1>
-pwsh -NoProfile -File ./cross-review.ps1 -Con grok
-pwsh -NoProfile -File ./cross-review.ps1 -Con qwen
-pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi
-pwsh -NoProfile -File ./cross-review.ps1 -Con auto -Excluir kimi -Archivos "engines/bid_motor.py,tests/test_bid_motor.py"
-```
-
-- `-Con` (obligatorio): que IA hace la revision -- `kimi`, `codex`,
-  `claude`, `glm`, `grok`, `qwen`, o `auto`.
-  `glm` invoca el binario `zcode` (paquete `zcode-app-cli`, cliente no
-  oficial del runtime ZCode de Z.AI; se instala con
-  `npm i -g zcode-app-cli` y `zcode login`), en modo plan (solo lectura),
-  NUNCA un lanzador de Claude Code apuntado a Z.AI. Ojo: zcode arranca su
-  backend de navegador headless en toda invocacion y no hay flag para
-  apagarlo; si eso no se quiere, deshabilitar el plugin `browser-use` en
-  `~/.zcode/cli/config.json`. `glm` tambien se invoca con `ANTHROPIC_*`
-  limpias (zcode las lee como fallback), por eso necesita `zcode login`
-  (OAuth) y no una API key en el entorno.
-- `-Con auto`: prueba la cadena `claude -> glm -> grok -> kimi -> qwen -> codex` (el cerebro mas
-  fuerte primero) y usa el PRIMERO que entregue una revision de verdad,
-  saltando al que pongas en `-Excluir` (la IA que escribio el cambio: una
-  IA no debe revisar su propio trabajo). Si un candidato no esta instalado
-  o falla, pasa al siguiente sin frenarte; si NINGUNO responde, sale con
-  codigo 3 para que quien llamo (por ejemplo, el harness de SummonAI) caiga
-  a su revisor interno y lo diga en su reporte. Al final anuncia el
-  "Revisor efectivo" para que quede claro quien reviso de verdad.
-  Nota de diseno: `claude` se invoca SIEMPRE con las variables de entorno
-  `ANTHROPIC_*` y `CLAUDE_CODE_USE_*` limpias -- asi una redireccion por
-  variables (un lanzador tipo `~/bin/glm-claude`, o los toggles de Bedrock/Vertex)
-  no desvia la revision: va a la cuenta real de Claude, con el modelo
-  default del plan (que mejora solo cuando Anthropic actualiza el plan, sin
-  tocar nada aca). Limite honesto: esto cubre redirecciones por variables
-  de entorno; un binario `claude` falso plantado en el PATH ya seria una
-  maquina comprometida, fuera del alcance de este script. Y si algun dia no
-  hay suscripcion de Claude, la cadena baja sola al siguiente cerebro
-  disponible. El codigo de salida 3 como senal de "sin revisor externo"
-  aplica SOLO al modo `auto`; en modo directo el codigo del CLI se propaga
-  tal cual, con UNA excepcion deliberada: salir con 0 pero sin decir nada
-  se convierte en codigo 1, porque una revision vacia no es una revision.
-  Dos consecuencias asumidas de la limpieza de variables (que aplica a
-  TODA invocacion de claude, tambien `-Con claude` directo): en una maquina
-  donde claude se autentique SOLO por ANTHROPIC_API_KEY (sin login OAuth),
-  claude va a fallar aqui a proposito -- en `auto` la cadena baja sola al
-  siguiente; y quien dependa de Bedrock/Vertex como unico acceso vera lo
-  mismo. En esta maquina el login es OAuth, asi que nada de esto aplica
-  hoy.
-  Este modo es el que usa el harness de SummonAI en los hosts que no son
-  Claude (Kimi, Codex, GLM): su gate de Review corre esto y le pega los
-  hallazgos a su revisor -- codigo escrito por un modelo menor siempre pasa
-  por el criterio del modelo mas fuerte disponible antes de cerrar.
-- `-Alcance` (opcional): que diferencias revisar.
-  - `staged`: lo que ya hiciste `git add`.
-  - `working`: lo que todavia NO hiciste `git add`.
-  - `last-commit`: el ultimo commit ya hecho.
-  - si no lo pasas: la combinacion de `staged` + `working` (todo lo que
-    todavia no esta commiteado).
-- `-Archivos` (opcional): limita el diff a esos archivos (pathspecs
-  relativos a la raiz del repo, separados por coma en un solo argumento;
-  acepta backslashes de Windows y los normaliza). Nacio de una falla real
-  (retro Kimi 2026-07-09): un working tree con CUATRO fixes acumulados
-  produjo un diff tan grande que el revisor externo murio por timeout dos
-  veces (>300 s) sin entregar nada -- con el scope de la tarea en curso el
-  diff queda chico y los hallazgos relevantes. Combinable con `-Alcance`.
-  OJO: una ruta mal tipeada da diff vacio en silencio; por eso el mensaje
-  de "no hay diferencias" nombra el scope pedido, para que el typo se vea.
-- `-Base <sha>` (opcional): la ronda 1 de un bloque. Manda `git diff <sha> HEAD`
-  (lo ya commiteado entre ese commit y HEAD; un archivo sin commitear no
-  entra) y NO le dice al revisor que juzgue solo arreglos. `<sha>` es el
-  merge-base con la rama base. No se combina con `-Desde` ni con `-Alcance`;
-  si el sha no es un commit del repo o no es ancestro de HEAD, corta antes de
-  llamar a nadie: con el diff de dos puntos, un base que no es ancestro le
-  mandaria al revisor la inversa de commits ajenos (usa `git merge-base HEAD
-  <rama-base>`).
-- `-Desde <sha>` (opcional): la segunda ronda. Revisa SOLO lo que cambio
-  desde ese commit (`git diff <sha>`: lo commiteado despues y lo que falta
-  commitear), es decir los arreglos de la ronda anterior, y le pide al
-  revisor que juzgue si cada arreglo es correcto y si rompio algo, sin
-  volver a revisar lo que no cambio. No se combina con `-Alcance`; si el sha
-  no es un commit del repo, corta antes de llamar a nadie. Combinable con
-  `-Archivos`.
-- `-DryRun`: muestra el comando y el mensaje que se le mandaria a la IA,
-  sin llamarla de verdad (util para probar sin gastar cuota).
-
-El diff se recorta a unos 60KB antes de mandarlo (con un aviso al final si
-se recorto) para no saturar el mensaje. El diff en si se guarda en un
-archivo temporal (fuera del repo, en la carpeta temporal del sistema) y se
-le pide a la IA que lo lea de ahi -- esto evita el limite de longitud que
-tiene Windows para un solo argumento de linea de comandos (unos 32.000
-caracteres), que un diff de 60KB superaria facil si se lo pasaramos
-directo como texto. El archivo temporal se borra solo al terminar.
-
-La IA responde con una lista numerada de hallazgos, cada uno marcado
-BLOQUEANTE o NO BLOQUEANTE, o, si no encuentra nada que objetar, la palabra
-`LGTM`. Un bloqueante trae el comando o los pasos que lo reproducen; sin
-reproduccion va como no bloqueante. Esa marca es la que decide si hay otra
-ronda (regla 4 de las instrucciones globales).
-
-### Como se invoca cada CLI
-
-kimi, claude y codex fueron probadas de verdad (no solo leyendo su
-documentacion) con diffs de ejemplo, varias veces cada una. grok y
-qwen estan cableadas contra sus flags headless documentados; todavia
-no tienen una ronda en vivo con un diff real:
-
-- **kimi -p**: funciona directo, sin nada especial que configurar. Rapido
-  (segundos) incluso pidiendole una revision real con hallazgos.
-- **claude -p**: funciona directo, sin nada especial que configurar.
-  Rapido, y en la prueba en vivo devolvio una revision real con hallazgos
-  concretos (una funcion nueva sin prueba, un problema de formato, un
-  detalle de fin de linea).
-- **codex exec**: funciona (confirmado con resultados reales de revision,
-  no solo un saludo), PERO con dos particularidades que hay que conocer:
-  1. En Windows, un shim `.cmd` se lanza mediante `cmd.exe /c`; en macOS y
-     Linux se ejecuta directamente el launcher nativo encontrado en `PATH`.
-     `cross-review.ps1` elige ambas rutas automaticamente.
-  2. Una de tiempos de respuesta, que NO tiene arreglo desde este kit: en
-     las pruebas en vivo, `codex exec` para una revision real tardo desde
-     unos 10-25 segundos hasta mas de 10 minutos para tareas de
-     complejidad comparable, sin ningun error -- solo mas lento. Esto
-     coincide con que esta instalacion de Codex tiene configurados varios
-     servidores MCP (Playwright, Context7, sequential-thinking, entre
-     otros) que se intentan levantar en cada invocacion, mas un nivel de
-     razonamiento alto por defecto; ninguna de las dos cosas es algo que
-     `cross-review.ps1` controle. Si `-Con codex` tarda mucho, es
-     esperable, no un cuelgue del script -- pero si preferis una revision
-     rapida, `kimi` o `claude` fueron mas predecibles en las pruebas.
-
-- **grok -p**: headless single-turn (`--single`). Se lanza con
-  `--no-subagents`, `--disable-web-search`, `--always-approve` y un
-  allowlist de herramientas de solo lectura (`read_file,grep,list_dir`)
-  para que pueda verificar codigo fuera del diff sin editar y sin
-  colgarse en un prompt de permisos. Cableado contra la CLI real; no es una prueba en vivo con un diff
-  real -- esa queda para cuando se use de verdad.
-- **qwen -p**: no interactivo, con `-y` y `-o text`. Su configuracion global
-  debe excluir las herramientas de escritura, tal como explica el comentario
-  del script. En Windows acepta el shim `.cmd`; en macOS y Linux usa el
-  launcher nativo. Tampoco tiene prueba en vivo con un diff real todavia.
-
-Ver la seccion de troubleshooting mas abajo para mas detalle sobre estos
-dos puntos de Codex, y por si en tu maquina especifica `codex` pide
-confirmar la confianza del directorio la primera vez (no paso en las
-pruebas en vivo de este kit, pero queda documentado por si aparece en otro
-repo o maquina).
-
 ## Instrucciones globales para las 3 IAs -- `install-ai-rules.ps1`
 
 Este script SI lo tenes que correr vos mismo (no una IA por vos): toca los
@@ -330,18 +172,14 @@ con estas reglas:
 3. Durante la implementacion se corren pruebas focalizadas; se ejecuta la
    bateria completa una sola vez por bloque sobre el commit final. Si commit,
    push o CI ya validaron el mismo SHA, esos checks no se repiten manualmente.
-4. Los hallazgos de revision se agrupan en una sola ronda por bloque. Para
-   cambios delicados, sugerir revision cruzada
-   (`cross-review.ps1`). Solo un hallazgo BLOQUEANTE (seguridad, datos, una
-   regla innegociable, el comportamiento pedido roto o una prueba que no
-   discrimina), con el comando que lo reproduce, abre otra ronda. Cada ronda
-   despues de la primera revisa solo el diff de los arreglos de la anterior
-   (`-Con <otro revisor> -Desde <sha>`). Se repite mientras una ronda traiga
-   un bloqueante y para en la primera que no traiga ninguno; si el mismo
-   bloqueante vuelve en dos rondas seguidas, el arreglo no converge y decide
-   el operador. Un bloqueante nunca va a una fila del plan ni se mergea
-   abierto. Lo no bloqueante que no se corrige va a una fila del plan y se
-   nombra en el PR.
+4. Los hallazgos de revision se agrupan y corrigen en una sola ronda por
+   bloque. Solo un hallazgo BLOQUEANTE (seguridad, datos, una regla
+   innegociable, el comportamiento pedido roto o una prueba que no
+   discrimina), con el comando que lo reproduce, reabre el ciclo. Un
+   bloqueante nunca va a una fila del plan ni se mergea abierto: se corrige,
+   o se para y decide el operador. Lo no bloqueante se corrige en la misma
+   ronda si es de una linea y, si no, va a una fila del plan y se nombra en
+   el PR.
 5. Una observacion tardia no bloqueante va a una fila del plan y no reabre el
    ciclo; el checklist posterior al deploy se ejecuta una sola vez mientras el
    SHA no cambie.
@@ -351,8 +189,8 @@ con estas reglas:
 8. CI: la bateria completa corre en jobs paralelos cuya union es la
    bateria (con candado); si un job pasa de ~10 min se shardea, nunca se
    recorta ni se saltea por tipo de cambio. Checks de docs/ledger en un
-   job propio. Carril: docs/chore/cierre = fast; codigo = gate;
-   medicion/release = +cross-review. Cierres de ledger de un bloque = un PR.
+   job propio. Carril: docs/chore/cierre = fast; codigo = gate. Cierres de
+   ledger de un bloque = un PR.
 
 Es idempotente (correrlo de nuevo no duplica nada) y deja una copia de
 seguridad con fecha antes de tocar cada archivo.
@@ -457,8 +295,8 @@ de ~10 min se shardea: bash `SAIKIT_SHARD=i/N`, pytest `-n auto`
 `init-repo.ps1`), jest/vitest `--shard`. Los checks que leen docs o ledger
 reales van en un job `gate` propio de segundos (los checkers corren sin
 args y sin deps extra: solo stdlib / bash). Carril: docs/chore/cierre =
-fast (bots + lead); codigo = gate (+ reviewer); medicion viva/release = +
-cross-review. Los cierres de ledger de un bloque van en un solo PR.
+fast (bots + lead); codigo = gate (+ reviewer). Los cierres de ledger de
+un bloque van en un solo PR.
 
 Para refrescar repos existentes (idempotente):
 
@@ -502,39 +340,6 @@ pwsh -NoProfile -File ./install-branch-push-policy.ps1 -RepoPath <repo> [-Mode a
   seccion `safety:` existente, sin tocar el resto.
 
 ## Troubleshooting
-
-### Codex pide confirmar la confianza del directorio
-
-Si `cross-review.ps1 -Con codex` (o `codex exec` directo) se queda
-esperando algo o falla mencionando confianza/trust del directorio, abri
-`codex` de forma interactiva una vez, adentro del repo en cuestion, y
-acepta la confianza cuando te la pida. Una vez hecho eso para ese repo,
-`codex exec`/`cross-review.ps1 -Con codex` van a funcionar sin pedir nada
-mas ahi. En las pruebas en vivo de este kit no volvio a pedirse esa
-confirmacion, pero queda documentado por si en otra maquina o otro repo si
-aparece.
-
-### Codex tarda mucho, o parece colgado
-
-Confirmado en vivo: para una revision real (no un simple saludo), `codex
-exec` tardo en las pruebas desde unos 10-25 segundos hasta mas de 10
-minutos en corridas distintas, con exactamente el mismo tipo de tarea, sin
-ningun error en el medio -- solo mas lento. Esto no es un cuelgue de
-`cross-review.ps1`: el mecanismo de lanzar `codex` funciona (confirmado
-repetidas veces, incluyendo corridas rapidas de 9 a 25 segundos con
-resultados reales). La variabilidad parece venir de esta instalacion
-puntual de Codex, que tiene configurados varios servidores MCP (Playwright,
-Context7, sequential-thinking, entre otros) que se intentan levantar en
-cada invocacion -- si alguno tarda en responder (por red, por cache fria de
-paquetes la primera vez, etc.), toda la invocacion de Codex tarda con el --
-sumado a que el nivel de razonamiento por defecto de Codex es alto. Nada de
-esto lo controla este kit ni se puede arreglar sin tocar la configuracion
-de Codex (que este kit deliberadamente no toca).
-
-Si te pasa: es normal, no un error. Si preferis una respuesta rapida y
-predecible, usa `kimi` o `claude` en su lugar -- ambos fueron
-consistentemente rapidos (segundos) en las pruebas en vivo, incluso
-pidiendoles una revision real con hallazgos concretos.
 
 ### El repo no tiene candados todavia
 

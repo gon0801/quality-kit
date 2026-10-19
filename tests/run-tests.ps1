@@ -1,19 +1,10 @@
 # Test suite for quality-kit. Builds real throwaway git repos under
 # tests\temp-fixtures\ (git init + real files), runs the real scripts
 # against them, and asserts on real files/exit codes -- no mocking.
-#
-# cross-review.ps1 is only ever exercised here with -DryRun: a real
-# invocation calls a real AI CLI and can take anywhere from seconds to
-# several minutes (confirmed live, especially for codex's default high
-# reasoning effort), which would make this suite slow and would burn real
-# quota on every run. -DryRun exercises the exact same diff-assembly,
-# capping, and prompt-building code path without ever spawning the CLI.
-
 $ErrorActionPreference = 'Stop'
 $QualityKitDir = Split-Path -Parent $PSScriptRoot
 $InitRepoScript = Join-Path $QualityKitDir 'init-repo.ps1'
 $HealRepoScript = Join-Path $QualityKitDir 'heal-repo.ps1'
-$CrossReviewScript = Join-Path $QualityKitDir 'cross-review.ps1'
 $InstallAiRulesScript = Join-Path $QualityKitDir 'install-ai-rules.ps1'
 $InstallRepoHygieneScript = Join-Path $QualityKitDir 'install-repo-hygiene.ps1'
 $UninstallAiRulesScript = Join-Path $QualityKitDir 'uninstall-ai-rules.ps1'
@@ -123,8 +114,7 @@ function Invoke-ScriptCapture {
     $proc.Start() | Out-Null
     # Lecturas ASYNC antes de esperar: en serie (stdout hasta EOF y despues
     # stderr) se traba si el hijo llena el buffer del pipe de stderr (~4KB)
-    # mientras el padre sigue bloqueado leyendo stdout. Invoke-CliHeadless, en
-    # cross-review.ps1, ya usa esta forma correcta.
+    # mientras el padre sigue bloqueado leyendo stdout.
     $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
     $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.StandardInput.Close()
@@ -164,8 +154,7 @@ function Invoke-ScriptCaptureWithoutBashOnPath {
     $proc.Start() | Out-Null
     # Lecturas ASYNC antes de esperar: en serie (stdout hasta EOF y despues
     # stderr) se traba si el hijo llena el buffer del pipe de stderr (~4KB)
-    # mientras el padre sigue bloqueado leyendo stdout. Invoke-CliHeadless, en
-    # cross-review.ps1, ya usa esta forma correcta.
+    # mientras el padre sigue bloqueado leyendo stdout.
     $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
     $stderrTask = $proc.StandardError.ReadToEndAsync()
     $proc.StandardInput.Close()
@@ -189,62 +178,6 @@ function Invoke-HealRepo {
     if ($AutoInit) { $scriptArgs += '-AutoInit' }
     if ($OwnersFile -ne '') { $scriptArgs += @('-OwnersFile', $OwnersFile) }
     return Invoke-ScriptCapture -ScriptPath $HealRepoScript -ScriptArgs $scriptArgs
-}
-
-function Invoke-CrossReviewDryRun {
-    param([string]$RepoPath, [string]$Con, [string]$Alcance = '', [string]$Excluir = '', [string]$Archivos = '', [string]$Desde = '', [string]$Base = '')
-    $scriptArgs = @('-Con', $Con, '-RepoPath', $RepoPath, '-DryRun')
-    if ($Alcance -ne '') { $scriptArgs += @('-Alcance', $Alcance) }
-    if ($Desde -ne '') { $scriptArgs += @('-Desde', $Desde) }
-    if ($Base -ne '') { $scriptArgs += @('-Base', $Base) }
-    if ($Excluir -ne '') { $scriptArgs += @('-Excluir', $Excluir) }
-    # Un solo string (posiblemente con comas), igual que como llega desde
-    # 'powershell -File' en el mundo real -- el split lo hace el script.
-    if ($Archivos -ne '') { $scriptArgs += @('-Archivos', $Archivos) }
-    return Invoke-ScriptCapture -ScriptPath $CrossReviewScript -ScriptArgs $scriptArgs
-}
-
-# Runs cross-review.ps1 -Con auto with every AI CLI's directory stripped
-# from the CHILD's PATH (git and everything else stay), to exercise the
-# "no external reviewer available" contract (exit 3) deterministically.
-# Safe without -DryRun: with no CLI findable, the chain never invokes
-# anything, so no quota is ever spent.
-function Invoke-CrossReviewAutoWithoutAiClisOnPath {
-    param([string]$RepoPath)
-    $aiDirs = @()
-    foreach ($cli in @('claude', 'kimi', 'codex', 'grok', 'qwen', 'zcode')) {
-        foreach ($cmd in @(Get-Command -Name $cli -All -ErrorAction SilentlyContinue)) {
-            $aiDirs += (Split-Path -Parent $cmd.Source).TrimEnd('\')
-        }
-    }
-    $aiDirs = @($aiDirs | Sort-Object -Unique)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $PowerShellExe
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $CrossReviewScript, '-Con', 'auto', '-RepoPath', $RepoPath)
-    $quotedParts = @()
-    foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
-    $psi.Arguments = ($quotedParts -join ' ')
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $currentPath = $psi.EnvironmentVariables[$PathEnvKey]
-    $filteredParts = @($currentPath -split [System.IO.Path]::PathSeparator | Where-Object {
-        $aiDirs -notcontains $_.TrimEnd('\')
-    })
-    $psi.EnvironmentVariables[$PathEnvKey] = ($filteredParts -join [System.IO.Path]::PathSeparator)
-    $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $psi
-    $proc.Start() | Out-Null
-    # Lecturas ASYNC antes de esperar: en serie (stdout hasta EOF y despues
-    # stderr) se traba si el hijo llena el buffer del pipe de stderr (~4KB)
-    # mientras el padre sigue bloqueado leyendo stdout. Invoke-CliHeadless, en
-    # cross-review.ps1, ya usa esta forma correcta.
-    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-    $stderrTask = $proc.StandardError.ReadToEndAsync()
-    $proc.StandardInput.Close()
-    $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
 }
 
 # ------------------------------------------------------------------
@@ -293,13 +226,12 @@ Assert-True ($pyClaudeMd -match 'pytest -x -q') 'the Calidad section documents t
 Assert-True ($pyClaudeMd -match 'commit, push o CI ya validaron') 'the managed Calidad section reuses checks already run by hooks or CI on the same SHA'
 Assert-True ($pyAgentsMd -match 'Agrupa los hallazgos de revision') 'the generated AGENTS.md requires one consolidated review round'
 Assert-True ($pyAgentsMd -match 'Solo un hallazgo bloqueante') 'the generated AGENTS.md reopens a review only for a blocking finding'
-Assert-True ($pyAgentsMd -match 'para en la primera ronda sin ninguno') 'the generated AGENTS.md keeps reviewing while blockers appear and stops at the first round without one'
-Assert-True ($pyAgentsMd -match 'Se repite mientras salga un bloqueante') 'the generated AGENTS.md keeps reviewing while blockers remain'
+Assert-True ($pyAgentsMd -match 'reabre el ciclo') 'the generated AGENTS.md reopens the cycle only for a blocking finding'
 Assert-True ($pyAgentsMd -match 'Lo no bloqueante que no se corrige va a una fila del plan') 'the generated AGENTS.md tracks uncorrected non-blockers in the plan'
 Assert-True ($pyAgentsMd -match 'si el mismo bloqueante vuelve en dos rondas seguidas') 'the generated AGENTS.md stops a fix that does not converge'
 Assert-True ($pyAgentsMd -match 'Un bloqueante nunca va a una fila del plan ni se mergea abierto') 'the generated AGENTS.md never parks a blocker in the plan nor merges it open'
 Assert-True ($pyAgentsMd -notmatch 'Tope: 2 rondas') 'the generated AGENTS.md has no fixed round cap'
-Assert-True ($pyAgentsMd -match [regex]::Escape('cross-review -Con <otro revisor> -Desde <sha>')) 'the generated AGENTS.md gives a runnable next-round command, with the mandatory -Con'
+Assert-True ($pyAgentsMd -notmatch 'cross-review') 'the generated AGENTS.md no longer hands out the cross-review command'
 Assert-True ($pyAgentsMd -match 'va a una fila del plan') 'the generated AGENTS.md sends what is not fixed to a plan row'
 Assert-True ($pyAgentsMd -match 'Despues del deploy, ejecuta una sola vez') 'the generated AGENTS.md requires one deploy checklist pass'
 Assert-True ($pyClaudeMd -match '8\. CI: la bateria completa corre en jobs paralelos cuya union es la bateria') 'the Calidad section includes rule 8 (CI paralelo), summarized, for hosts that do not read the global rules'
@@ -707,431 +639,6 @@ Assert-True ($mcp2MainConfigAfter -eq $mcp2MainConfigDoctored) 'the unittest hoo
 Assert-True ($rMcp2Main.Stdout -match [regex]::Escape('todavia funciona -- lo mantengo tal cual')) 'the existing unittest hook is still separately confirmed as still working (lessons 3b/3c), on top of the item-4 customization protection'
 Assert-True ($rMcp2Main.Stdout -match 'Config personalizado detectado') 'the customization safety net also reports explicitly'
 Assert-True (Test-Path -LiteralPath (Join-Path $mcp2MainRepo '.git\hooks\pre-push')) 'the real git pre-push hook (installed during setup) is still in place'
-
-# ------------------------------------------------------------------
-# TEST GROUP 3: cross-review.ps1 -DryRun (never calls a real AI in this suite)
-# ------------------------------------------------------------------
-Write-Host ''
-Write-Host '=== TEST GROUP 3: cross-review.ps1 -DryRun output shape, for all six targets ==='
-# A small real change to review, so the diff is non-empty.
-Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`n`ndef sub(a, b):`n    return a - b`n"
-
-foreach ($con in @('kimi', 'codex', 'claude', 'grok', 'qwen', 'glm')) {
-    $r = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con $con
-    if ($con -eq 'glm') { $rGlm = $r }
-    Assert-True ($r.ExitCode -eq 0) "cross-review.ps1 -DryRun exits 0 for -Con $con" "exit=$($r.ExitCode) stderr=$($r.Stderr)"
-    Assert-True ($r.Stdout -match 'DRY RUN') "-Con $con -DryRun output announces DRY RUN"
-    Assert-True ($r.Stdout -match [regex]::Escape('Comando:')) "-Con $con -DryRun output shows the exact command that would run"
-    Assert-True ($r.Stdout -match 'Prompt') "-Con $con -DryRun output shows the prompt that would be sent"
-    Assert-True ($r.Stdout -match [regex]::Escape('LGTM')) "-Con $con -DryRun prompt instructs the reviewer to answer LGTM when there is nothing to flag"
-    $tempFileMatch = [regex]::Match($r.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
-    Assert-True ($tempFileMatch.Success) "-Con $con -DryRun output references a temp diff file"
-    if ($tempFileMatch.Success) {
-        $tempFilePath = Join-Path ([System.IO.Path]::GetTempPath()) $tempFileMatch.Value
-        Assert-True (Test-Path -LiteralPath $tempFilePath) "-Con $con -DryRun leaves the temp diff file on disk for inspection (by design, only in -DryRun)"
-        $tempFileContent = Read-TextFile -Path $tempFilePath
-        Assert-True ($tempFileContent -match 'def sub') "-Con $con temp diff file actually contains the real diff content"
-        Remove-Item -LiteralPath $tempFilePath -Force -ErrorAction SilentlyContinue
-    }
-}
-
-# glm = binario zcode (zcode-app-cli, cliente del runtime ZCode de Z.AI),
-# nunca un lanzador de Claude Code apuntado a Z.AI. Usa el $rGlm capturado
-# en el loop de arriba (un solo spawn). Discrimina: falla si 'glm' vuelve
-# a resolver a claude (comando sin 'zcode'), si pierde el modo plan (solo
-# lectura), si pierde los candados de skills/red, si toma el camino inline
-# por stdin exclusivo de claude, o si deja de limpiar ANTHROPIC_* (zcode
-# tambien lee ANTHROPIC_BASE_URL como fallback).
-Assert-True ($null -ne $rGlm) "-Con glm dry run captured by the loop above ('glm' must stay in its target list)"
-if ($null -eq $rGlm) { $rGlm = [PSCustomObject]@{ Stdout = '' } }
-$glmCmd = [regex]::Match($rGlm.Stdout, 'Comando: ([^\r\n]*)').Groups[1].Value
-Assert-True ($glmCmd -match 'zcode') "-Con glm runs the zcode binary, not a Claude Code launcher" "cmd=$glmCmd"
-Assert-True ($glmCmd -match '--mode plan') '-Con glm runs zcode read-only (--mode plan)' "cmd=$glmCmd"
-Assert-True ($glmCmd -match '--disallowed-tools "[^"]*Skill[^"]*"') '-Con glm denies Skill (plan mode does not block skills by itself)' "cmd=$glmCmd"
-Assert-True ($glmCmd -match '--disallowed-tools "[^"]*WebFetch[^"]*"') '-Con glm denies WebFetch (local reviewer, like grok --disable-web-search)' "cmd=$glmCmd"
-Assert-True ($glmCmd -notmatch 'MultiEdit') '-Con glm denylist uses real zcode tool names (MultiEdit does not exist there)' "cmd=$glmCmd"
-Assert-True ($rGlm.Stdout -notmatch 'inline por stdin') '-Con glm reads the temp diff file (the stdin inline path is claude-only)'
-Assert-True ($rGlm.Stdout -match '(?m)^Nota: se invocaria con las variables de entorno ANTHROPIC_\*') '-Con glm strips ANTHROPIC_* (zcode reads ANTHROPIC_BASE_URL as fallback)'
-Assert-True ($rGlm.Stdout -notmatch '(?m)^Nota: se invocaria.*CLAUDE_CONFIG_DIR') '-Con glm does not strip CLAUDE_CODE_*/CLAUDE_CONFIG_DIR (Claude Code only; zcode never reads them)'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3b: cross-review.ps1 -Alcance variations select the right diff ==='
-Push-Location -LiteralPath $pyRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A') } finally { Pop-Location }
-$rStaged = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'kimi' -Alcance 'staged'
-Assert-True ($rStaged.Stdout -match 'Alcance: staged') '-Alcance staged is reflected in the output label'
-$rWorking = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'kimi' -Alcance 'working'
-Assert-True ($rWorking.Stdout -match 'Alcance: working') '-Alcance working is reflected in the output label'
-Assert-True ([string]::IsNullOrWhiteSpace(($rWorking.Stdout -split "`n" | Where-Object { $_ -match 'Tamano del diff: 0 ' }))) 'sanity: -Alcance working with nothing unstaged still runs (may be empty, must not crash)' 'informational only'
-Push-Location -LiteralPath $pyRepo
-try { Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'add sub function') } finally { Pop-Location }
-$rLast = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'kimi' -Alcance 'last-commit'
-Assert-True ($rLast.Stdout -match 'Alcance: last-commit') '-Alcance last-commit is reflected in the output label'
-Assert-True ($rLast.ExitCode -eq 0) '-Alcance last-commit works even though this reads git show HEAD (no HEAD~1 assumption)' "exit=$($rLast.ExitCode)"
-
-$rDefault = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'kimi'
-Assert-True ($rDefault.Stdout -match [regex]::Escape('Alcance: combinado')) 'omitting -Alcance defaults to the combined (staged + working) label'
-
-# Sobre $rLast (el ultimo commit de $pyRepo, nunca vacio): una corrida sin diff
-# sale antes de armar el pedido y las comprobaciones negativas pasarian sin
-# mirar nada. La primera asercion fija que el pedido existe. Estas aserciones
-# son del run de -Alcance last-commit de ARRIBA y viven en ESTE grupo: una
-# asercion vieja impresa bajo el encabezado del grupo -Base hace leer el fallo
-# en el grupo equivocado.
-Assert-True ($rLast.Stdout -match 'Actua como revisor de codigo externo') 'sanity: the first-round run did build a reviewer prompt'
-Assert-True ($rLast.Stdout -match 'BLOQUEANTE o NO BLOQUEANTE') 'the reviewer prompt asks to mark every finding BLOQUEANTE or NO BLOQUEANTE'
-Assert-True ($rLast.Stdout -match 'sin reproduccion va como NO BLOQUEANTE') 'a blocking finding needs a reproduction'
-Assert-True ($rLast.Stdout -notmatch 'alta/media/baja') 'the old alta/media/baja severity scale is gone from the prompt'
-Assert-True ($rLast.Stdout -notmatch 'SOLO los arreglos de una ronda') 'a first-round review does not get the second-round clause'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3b-desde: cross-review.ps1 -Desde reviews ONLY the fixes of a previous round ==='
-# Regla 4: la segunda ronda revisa solo el diff de los arreglos. Un commit
-# "ronda 1" (lo que vio la primera ronda) y despues un arreglo en otro archivo:
-# -Desde <ronda1> tiene que mandar el arreglo y NO lo que ya estaba revisado.
-$desdeRepo = New-FakeGitRepo -Name 'fake-desde-repo'
-Write-Utf8NoBomFile -Path (Join-Path $desdeRepo 'revisado.py') -Content "CODIGO_YA_REVISADO = 1`n"
-Push-Location -LiteralPath $desdeRepo
-try {
-    Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'ronda 1')
-    $shaRonda1 = (& git rev-parse HEAD).Trim()
-} finally { Pop-Location }
-Write-Utf8NoBomFile -Path (Join-Path $desdeRepo 'arreglo.py') -Content "ARREGLO_DE_LA_RONDA = 2`n"
-Push-Location -LiteralPath $desdeRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'arreglo') } finally { Pop-Location }
-$rDesde = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde $shaRonda1
-Assert-True ($rDesde.ExitCode -eq 0) '-Desde <sha> runs' "exit=$($rDesde.ExitCode) stderr=$($rDesde.Stderr)"
-Assert-True ($rDesde.Stdout -match [regex]::Escape("Alcance: desde $shaRonda1")) '-Desde is reflected in the output label'
-Assert-True ($rDesde.Stdout -match 'SOLO los arreglos de una ronda de revision anterior') '-Desde tells the reviewer to judge only the fixes'
-$tempDesde = [regex]::Match($rDesde.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
-Assert-True ($tempDesde.Success) '-Desde run references a temp diff file'
-if ($tempDesde.Success) {
-    $desdePath = Join-Path ([System.IO.Path]::GetTempPath()) $tempDesde.Value
-    $desdeDiff = Read-TextFile -Path $desdePath
-    Assert-True ($desdeDiff -match 'ARREGLO_DE_LA_RONDA') 'the -Desde diff carries the fix made after the first round'
-    Assert-True ($desdeDiff -notmatch 'CODIGO_YA_REVISADO') 'the -Desde diff does NOT resend code the first round already reviewed'
-    Remove-Item -LiteralPath $desdePath -Force -ErrorAction SilentlyContinue
-}
-$rDesdeYAlcance = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde $shaRonda1 -Alcance 'staged'
-Assert-True ($rDesdeYAlcance.ExitCode -ne 0) '-Desde together with -Alcance is refused' "exit=$($rDesdeYAlcance.ExitCode)"
-Assert-True (($rDesdeYAlcance.Stdout + $rDesdeYAlcance.Stderr) -match 'no se combinan') 'the refusal says -Desde and -Alcance do not combine'
-$rDesdeMalo = Invoke-CrossReviewDryRun -RepoPath $desdeRepo -Con 'kimi' -Desde 'no-es-un-commit'
-Assert-True ($rDesdeMalo.ExitCode -ne 0) 'a -Desde that is not a commit is refused before calling any reviewer' "exit=$($rDesdeMalo.ExitCode)"
-Assert-True (($rDesdeMalo.Stdout + $rDesdeMalo.Stderr) -match 'no es un commit') 'the refusal names the bad -Desde'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3b-base: cross-review.ps1 -Base reviews the committed block, not a fixes-only round ==='
-# La ronda 1 de un bloque de varios commits tiene que ver git diff <base> HEAD
-# (los dos commits) y NO la clausula de arreglos. Un archivo sin commitear
-# no entra: eso es el working tree, que es lo que hace git diff <sha> a secas.
-$baseRepo = New-FakeGitRepo -Name 'fake-base-repo'
-Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'previo.py') -Content "BASE_PREVIA = 0`n"
-Push-Location -LiteralPath $baseRepo
-try {
-    Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'base')
-    $shaBase = (& git rev-parse HEAD).Trim()
-} finally { Pop-Location }
-Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'bloque.py') -Content "CODIGO_DEL_BLOQUE = 1`n"
-Push-Location -LiteralPath $baseRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'bloque') } finally { Pop-Location }
-Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'sigue.py') -Content "MAS_DEL_BLOQUE = 2`n"
-Push-Location -LiteralPath $baseRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'sigue') } finally { Pop-Location }
-Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'ruido.py') -Content "RUIDO_WORKING = 3`n"
-$rBase = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaBase
-Assert-True ($rBase.ExitCode -eq 0) '-Base <sha> runs' "exit=$($rBase.ExitCode) stderr=$($rBase.Stderr)"
-Assert-True ($rBase.Stdout -match [regex]::Escape("Alcance: bloque desde $shaBase hasta HEAD")) '-Base is reflected in the output label'
-Assert-True ($rBase.Stdout -notmatch 'SOLO los arreglos de una ronda') '-Base does not inject the fixes-only clause'
-$tempBase = [regex]::Match($rBase.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
-Assert-True ($tempBase.Success) '-Base run references a temp diff file'
-if ($tempBase.Success) {
-    $basePath = Join-Path ([System.IO.Path]::GetTempPath()) $tempBase.Value
-    $baseDiff = Read-TextFile -Path $basePath
-    Assert-True ($baseDiff -match 'CODIGO_DEL_BLOQUE') 'the -Base diff carries the first commit of the block'
-    Assert-True ($baseDiff -match 'MAS_DEL_BLOQUE') 'the -Base diff carries the later commit of the block'
-    Assert-True ($baseDiff -notmatch 'RUIDO_WORKING') 'the -Base diff does not include uncommitted work'
-    Assert-True ($baseDiff -notmatch 'BASE_PREVIA') 'the -Base diff does not resend the parent commit'
-    Remove-Item -LiteralPath $basePath -Force -ErrorAction SilentlyContinue
-}
-$rBaseYDesde = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaBase -Desde $shaBase
-Assert-True ($rBaseYDesde.ExitCode -ne 0) '-Base together with -Desde is refused' "exit=$($rBaseYDesde.ExitCode)"
-Assert-True (($rBaseYDesde.Stdout + $rBaseYDesde.Stderr) -match 'no se combinan') 'the refusal says -Base and -Desde do not combine'
-$rBaseYAlcance = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaBase -Alcance 'staged'
-Assert-True ($rBaseYAlcance.ExitCode -ne 0) '-Base together with -Alcance is refused' "exit=$($rBaseYAlcance.ExitCode)"
-Assert-True (($rBaseYAlcance.Stdout + $rBaseYAlcance.Stderr) -match 'no se combinan') 'the refusal says -Base and -Alcance do not combine'
-$rBaseMalo = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base 'no-es-un-commit'
-Assert-True ($rBaseMalo.ExitCode -ne 0) 'a -Base that is not a commit is refused' "exit=$($rBaseMalo.ExitCode)"
-Assert-True (($rBaseMalo.Stdout + $rBaseMalo.Stderr) -match 'no es un commit') 'the refusal names the bad -Base'
-
-# Un commit en la base que NO esta en la rama: el diff de dos puntos
-# (git diff <base> HEAD) es "como pasar de <base> a HEAD", asi que mandaria al
-# revisor la INVERSA de ese commit ajeno. <sha> es el merge-base con la rama
-# base y por construction siempre es ancestro: lo que no lo es, se rechaza
-# antes de llamar a nadie.
-$ramaOriginal = ''
-Push-Location -LiteralPath $baseRepo
-try {
-    $ramaOriginal = (& git rev-parse --abbrev-ref HEAD).Trim()
-    Invoke-GitSilent -GitArgs @('checkout', '-q', '-b', 'ajena')
-    Write-Utf8NoBomFile -Path (Join-Path $baseRepo 'ajeno.py') -Content "COMMIT_AJENO = 9`n"
-    Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'commit ajeno fuera de la rama')
-    $shaAjeno = (& git rev-parse HEAD).Trim()
-    Invoke-GitSilent -GitArgs @('checkout', '-q', $ramaOriginal)
-} finally { Pop-Location }
-$rBaseAjena = Invoke-CrossReviewDryRun -RepoPath $baseRepo -Con 'kimi' -Base $shaAjeno
-Assert-True ($rBaseAjena.ExitCode -ne 0) 'a -Base whose commit is not an ancestor of HEAD is refused' "exit=$($rBaseAjena.ExitCode) stderr=$($rBaseAjena.Stderr)"
-Assert-True (($rBaseAjena.Stdout + $rBaseAjena.Stderr) -match 'no es ancestro') 'the refusal says the -Base commit is not an ancestor of HEAD'
-Assert-True (($rBaseAjena.Stdout + $rBaseAjena.Stderr) -notmatch [regex]::Escape('COMMIT_AJENO')) 'the refusal never ships the foreign commit to a reviewer'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3c: cross-review.ps1 caps an oversized diff at ~60KB with a truncation notice ==='
-$bigDiffRepo = New-FakeGitRepo -Name 'fake-bigdiff-repo'
-Write-Utf8NoBomFile -Path (Join-Path $bigDiffRepo 'big.txt') -Content 'placeholder'
-Push-Location -LiteralPath $bigDiffRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
-$bigContent = ('x = 1  # filler line to pad size past the 60KB cap' + "`n") * 2000
-Write-Utf8NoBomFile -Path (Join-Path $bigDiffRepo 'big.txt') -Content $bigContent
-$rBig = Invoke-CrossReviewDryRun -RepoPath $bigDiffRepo -Con 'kimi' -Alcance 'working'
-Assert-True ($rBig.ExitCode -eq 0) 'cross-review.ps1 -DryRun still exits 0 on an oversized diff' "exit=$($rBig.ExitCode)"
-$tempFileMatchBig = [regex]::Match($rBig.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
-Assert-True ($tempFileMatchBig.Success) 'oversized-diff run still references a temp diff file'
-if ($tempFileMatchBig.Success) {
-    $tempFilePathBig = Join-Path ([System.IO.Path]::GetTempPath()) $tempFileMatchBig.Value
-    $tempFileContentBig = Read-TextFile -Path $tempFilePathBig
-    Assert-True ($tempFileContentBig.Length -le 60200) 'the written diff file is capped near the ~60KB (60000 char) limit, not the full oversized diff' "length=$($tempFileContentBig.Length)"
-    Assert-True ($tempFileContentBig -match 'diff truncado') 'the capped diff file carries an explicit truncation notice'
-    Remove-Item -LiteralPath $tempFilePathBig -Force -ErrorAction SilentlyContinue
-}
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3d: cross-review.ps1 handles an empty diff gracefully ==='
-$emptyDiffRepo = New-FakeGitRepo -Name 'fake-emptydiff-repo'
-Write-Utf8NoBomFile -Path (Join-Path $emptyDiffRepo 'README.md') -Content "# nothing changed here`n"
-Push-Location -LiteralPath $emptyDiffRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
-$rEmpty = Invoke-CrossReviewDryRun -RepoPath $emptyDiffRepo -Con 'kimi'
-Assert-True ($rEmpty.ExitCode -eq 0) 'cross-review.ps1 exits 0 cleanly when there is nothing to review' "exit=$($rEmpty.ExitCode)"
-Assert-True ($rEmpty.Stdout -match 'No hay diferencias') 'cross-review.ps1 says plainly there is nothing to review, instead of calling the AI on an empty diff'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3e: cross-review.ps1 -Con auto (chain, -Excluir, self-review guard) ==='
-# Earlier groups may have left $pyRepo fully committed (empty diff), and an
-# empty diff makes cross-review exit early without exercising the chain --
-# so guarantee a fresh working-tree change first.
-Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`ndef mul(a, b):`n    return a * b`n"
-# auto mode, excluding the AI that wrote the change: the chain must show
-# only the remaining candidates, pick the first available one, and still
-# produce the normal DRY RUN shape (command + prompt + temp diff file).
-$rAuto = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto' -Excluir 'kimi'
-Assert-True ($rAuto.ExitCode -eq 0) '-Con auto -DryRun exits 0' "exit=$($rAuto.ExitCode) stderr=$($rAuto.Stderr)"
-Assert-True ($rAuto.Stdout -match [regex]::Escape('Cadena auto: claude -> glm -> grok -> qwen -> codex')) '-Con auto -Excluir kimi announces the current chain without the excluded AI'
-# Only the candidate list BEFORE the '(' matters: the parenthetical
-# "(excluido: kimi, ...)" legitimately names the excluded AI.
-Assert-True ($rAuto.Stdout -notmatch 'Cadena auto:[^(\r\n]*kimi') '-Con auto -Excluir kimi never lists kimi as a candidate'
-Assert-True ($rAuto.Stdout -match 'Candidato elegido') '-Con auto -DryRun names the candidate that would run'
-Assert-True ($rAuto.Stdout -match [regex]::Escape('Comando:')) '-Con auto -DryRun still shows the exact command that would run'
-Assert-True ($rAuto.Stdout -match 'DRY RUN') '-Con auto -DryRun still announces DRY RUN (no real AI called)'
-
-# auto with no exclusion: full chain, strongest first.
-$rAutoFull = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto'
-Assert-True ($rAutoFull.ExitCode -eq 0) '-Con auto (sin -Excluir) -DryRun exits 0' "exit=$($rAutoFull.ExitCode)"
-Assert-True ($rAutoFull.Stdout -match [regex]::Escape('Cadena auto: claude -> glm -> grok -> kimi -> qwen -> codex')) '-Con auto announces the full current chain, strongest brain first'
-
-# self-review guard: asking an AI to review its own change must be refused.
-$rSelf = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'claude' -Excluir 'claude'
-Assert-True ($rSelf.ExitCode -ne 0) '-Con claude -Excluir claude is refused (an AI must not review its own change)' "exit=$($rSelf.ExitCode)"
-Assert-True (($rSelf.Stdout + $rSelf.Stderr) -match 'no debe revisar su propio cambio') 'the self-review refusal explains itself plainly'
-$rSelfGrok = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'grok' -Excluir 'grok'
-Assert-True ($rSelfGrok.ExitCode -ne 0) '-Con grok -Excluir grok is refused (an AI must not review its own change)' "exit=$($rSelfGrok.ExitCode)"
-Assert-True (($rSelfGrok.Stdout + $rSelfGrok.Stderr) -match 'no debe revisar su propio cambio') 'the grok self-review refusal explains itself plainly'
-$rSelfQwen = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'qwen' -Excluir 'qwen'
-Assert-True ($rSelfQwen.ExitCode -ne 0) '-Con qwen -Excluir qwen is refused (an AI must not review its own change)' "exit=$($rSelfQwen.ExitCode)"
-Assert-True (($rSelfQwen.Stdout + $rSelfQwen.Stderr) -match 'no debe revisar su propio cambio') 'the qwen self-review refusal explains itself plainly'
-
-# grok/qwen DryRun must wire the documented headless flags (not the TUI).
-$rGrok = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'grok'
-Assert-True ($rGrok.ExitCode -eq 0) '-Con grok -DryRun exits 0' "exit=$($rGrok.ExitCode) stderr=$($rGrok.Stderr)"
-Assert-True ($rGrok.Stdout -match '(?m)^Comando:.*\s-p\s') '-Con grok DryRun command uses grok -p (headless single-turn)'
-Assert-True ($rGrok.Stdout -match '--no-subagents') '-Con grok DryRun command disables subagents so it cannot load a review skill instead of answering'
-Assert-True ($rGrok.Stdout -match '--always-approve') '-Con grok DryRun command auto-approves so a permission prompt cannot hang headless'
-Assert-True ($rGrok.Stdout -match 'read_file') '-Con grok DryRun command allowlists read tools so VERIFICAR can actually verify'
-$rQwen = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'qwen'
-Assert-True ($rQwen.ExitCode -eq 0) '-Con qwen -DryRun exits 0' "exit=$($rQwen.ExitCode) stderr=$($rQwen.Stderr)"
-Assert-True ($rQwen.Stdout -match '(?m)^Comando:.*\s-p\s') '-Con qwen DryRun command uses qwen -p (non-interactive)'
-Assert-True ($rQwen.Stdout -match '(?m)^Comando:.*\s-y\s+-o\s+text') '-Con qwen DryRun auto-approves its read-only tool allowlist and requests text output'
-Assert-True ($rQwen.Stdout -notmatch '--approval-mode plan|--safe-mode') '-Con qwen DryRun omits obsolete flags that either do not exist or disable its tool exclusions'
-
-# exit-3 contract: with NO AI CLI findable on the child's PATH, auto mode
-# must fall all the way through the chain and exit 3 (the harness reads
-# this as "fall back to your internal reviewer") -- without ever invoking
-# anything.
-$rNone = Invoke-CrossReviewAutoWithoutAiClisOnPath -RepoPath $pyRepo
-Assert-True ($rNone.ExitCode -eq 3) '-Con auto exits 3 when no external reviewer CLI is available (harness fallback contract)' "exit=$($rNone.ExitCode) stderr=$($rNone.Stderr)"
-Assert-True ($rNone.Stdout -match 'NINGUN revisor externo') 'the exit-3 path says plainly that no external reviewer could review'
-Assert-True ($rNone.Stdout -match 'no esta instalado') 'each unavailable candidate is reported as it is skipped'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3f (retro Kimi 2026-07-09): -Archivos limits the diff to the current task''s files ==='
-# The real failure: a working tree holding FOUR accumulated bug fixes made
-# the external reviewer time out twice reviewing everything at once. The
-# fix: -Archivos scopes the diff to the files of THIS task only.
-$scopeRepo = New-FakeGitRepo -Name 'fake-scope-repo'
-New-Item -ItemType Directory -Path (Join-Path $scopeRepo 'sub') -Force | Out-Null
-Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_a.py') -Content "def a():`n    return 1`n"
-Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_b.py') -Content "def b():`n    return 2`n"
-Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'sub\bug_c.py') -Content "def c():`n    return 3`n"
-Push-Location -LiteralPath $scopeRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
-# Simulate the accumulated tree: THREE files changed, only one belongs to the task under review.
-Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_a.py') -Content "def a():`n    return 100  # marker_bug_a`n"
-Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'bug_b.py') -Content "def b():`n    return 200  # marker_bug_b`n"
-Write-Utf8NoBomFile -Path (Join-Path $scopeRepo 'sub\bug_c.py') -Content "def c():`n    return 300  # marker_bug_c`n"
-
-$rScoped = Invoke-CrossReviewDryRun -RepoPath $scopeRepo -Con 'kimi' -Archivos 'bug_a.py'
-Assert-True ($rScoped.ExitCode -eq 0) '-Archivos scoped run exits 0' "exit=$($rScoped.ExitCode) stderr=$($rScoped.Stderr)"
-Assert-True ($rScoped.Stdout -match [regex]::Escape('Archivos (pathspec de la tarea): bug_a.py')) '-Archivos scope is announced in the output'
-$tempScoped = [regex]::Match($rScoped.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
-Assert-True ($tempScoped.Success) '-Archivos scoped run still references a temp diff file'
-if ($tempScoped.Success) {
-    $tempScopedPath = Join-Path ([System.IO.Path]::GetTempPath()) $tempScoped.Value
-    $tempScopedContent = Read-TextFile -Path $tempScopedPath
-    Assert-True ($tempScopedContent -match 'marker_bug_a') 'the scoped diff contains the in-scope file''s change'
-    Assert-True ($tempScopedContent -notmatch 'marker_bug_b') 'the scoped diff does NOT contain the other accumulated change (the whole point of -Archivos)'
-    Remove-Item -LiteralPath $tempScopedPath -Force -ErrorAction SilentlyContinue
-}
-
-# Comma-separated list in ONE argument (how it arrives via 'powershell -File')
-# plus a backslash Windows path: both files in, third still out.
-$rMulti = Invoke-CrossReviewDryRun -RepoPath $scopeRepo -Con 'kimi' -Archivos 'bug_a.py, sub\bug_c.py'
-$tempMulti = [regex]::Match($rMulti.Stdout, 'quality-kit-review-[0-9a-f]+\.txt')
-Assert-True ($tempMulti.Success) 'comma-separated -Archivos run references a temp diff file'
-if ($tempMulti.Success) {
-    $tempMultiPath = Join-Path ([System.IO.Path]::GetTempPath()) $tempMulti.Value
-    $tempMultiContent = Read-TextFile -Path $tempMultiPath
-    Assert-True ($tempMultiContent -match 'marker_bug_a') 'comma-separated scope includes the first file'
-    Assert-True ($tempMultiContent -match 'marker_bug_c') 'a backslash Windows path is normalized to a git pathspec and matches'
-    Assert-True ($tempMultiContent -notmatch 'marker_bug_b') 'the file outside the comma-separated scope stays out'
-    Remove-Item -LiteralPath $tempMultiPath -Force -ErrorAction SilentlyContinue
-}
-
-# A mistyped path yields an empty diff: must exit 0 but NAME the scope so
-# the typo is visible instead of a silent "nothing to do".
-$rTypo = Invoke-CrossReviewDryRun -RepoPath $scopeRepo -Con 'kimi' -Archivos 'no_existe.py'
-Assert-True ($rTypo.ExitCode -eq 0) 'a scope matching nothing exits 0 (empty diff, not an error)' "exit=$($rTypo.ExitCode)"
-Assert-True ($rTypo.Stdout -match 'dentro de los archivos pedidos') 'the empty-scoped-diff message names the scope so a typo is visible'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3g (audit 2026-08-03): a git failure never travels to the reviewer as a diff ==='
-# Get-ReviewDiff merges git's stderr into the diff text ON PURPOSE (keeps the
-# diagnostic), but nobody read git's exit code -- so in a repo with NO commits
-# "git show HEAD" fails and its "fatal: ambiguous argument 'HEAD'" was handed to
-# an external reviewer AS the diff, burning a whole ~100-150k-token round on an
-# error message. New-FakeGitRepo deliberately leaves the repo commit-less.
-$noCommitRepo = New-FakeGitRepo -Name 'fake-nocommit-repo'
-$rGitFail = Invoke-CrossReviewDryRun -RepoPath $noCommitRepo -Con 'kimi' -Alcance 'last-commit'
-Assert-True ($rGitFail.ExitCode -ne 0) 'a repo with no commits fails loudly instead of reviewing git''s own error text' "exit=$($rGitFail.ExitCode)"
-Assert-True ($rGitFail.Stdout -match 'git fallo al armar el diff') 'the git failure is reported plainly, naming git as the culprit'
-Assert-True ($rGitFail.Stdout -notmatch 'DRY RUN') 'no reviewer invocation is even prepared once git failed'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3h (audit 2026-08-03): last-commit + mistyped -Archivos is not a reviewable diff ==='
-# "git show" ALWAYS prints the commit header, so a pathspec matching nothing
-# still produced NON-empty output: the empty-diff guard never fired and a
-# "diff" carrying zero changes went out for review. Only the presence of a
-# "diff --git " line proves there is real content.
-$showRepo = New-FakeGitRepo -Name 'fake-showscope-repo'
-Write-Utf8NoBomFile -Path (Join-Path $showRepo 'real.py') -Content "def real():`n    return 1  # marker_real`n"
-Push-Location -LiteralPath $showRepo
-try { Invoke-GitSilent -GitArgs @('add', '-A'); Invoke-GitSilent -GitArgs @('commit', '-q', '-m', 'initial') } finally { Pop-Location }
-$rShowTypo = Invoke-CrossReviewDryRun -RepoPath $showRepo -Con 'kimi' -Alcance 'last-commit' -Archivos 'no_existe.py'
-Assert-True ($rShowTypo.ExitCode -eq 0) 'a last-commit scope matching nothing exits 0 (nothing to review, not an error)' "exit=$($rShowTypo.ExitCode)"
-Assert-True ($rShowTypo.Stdout -match 'dentro de los archivos pedidos') 'the message names the scope so the typo is visible'
-Assert-True ($rShowTypo.Stdout -notmatch 'DRY RUN') 'a bare commit header with no changes is never sent out as a diff'
-# Sanity: the same scope with the RIGHT path still reaches the reviewer.
-$rShowOk = Invoke-CrossReviewDryRun -RepoPath $showRepo -Con 'kimi' -Alcance 'last-commit' -Archivos 'real.py'
-Assert-True ($rShowOk.Stdout -match 'DRY RUN') 'a last-commit scope with real changes still reaches the reviewer'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3i (audit 2026-08-03): -Con auto without -Excluir warns about self-review ==='
-# Single mode refuses -Excluir == -Con outright, but auto had no guard at all:
-# the chain starts at claude, usually the very AI that wrote the change, so
-# forgetting the flag silently destroyed the independence this script exists for.
-$rAutoNoExcl = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto'
-Assert-True ($rAutoNoExcl.Stdout -match 'no pasaste -Excluir') '-Con auto without -Excluir warns that the first candidate may be reviewing its own change'
-$rAutoExcl = Invoke-CrossReviewDryRun -RepoPath $pyRepo -Con 'auto' -Excluir 'claude'
-Assert-True ($rAutoExcl.Stdout -notmatch 'no pasaste -Excluir') 'the warning disappears once -Excluir is given'
-
-Write-Host ''
-Write-Host '=== TEST GROUP 3j (audit 2026-08-03): env-var redirections are actually stripped before claude runs ==='
-# Verified live: CLAUDE_CONFIG_DIR pointed at an empty folder makes the real
-# CLI build a whole config tree there (.claude.json, projects, sessions) --
-# it redirects configuration AND credentials, and it escaped both existing
-# prefixes, so a session launched with it set sent the review to another
-# account silently.
-# This test runs for real (no -DryRun) against a FAKE claude on PATH that only
-# reports which vars reached it: zero AI quota, real end-to-end stripping.
-function Invoke-CrossReviewWithFakeClaude {
-    param([string]$RepoPath, [string]$FakeCliDir)
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $PowerShellExe
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $CrossReviewScript, '-Con', 'claude', '-RepoPath', $RepoPath)
-    $quotedParts = @()
-    foreach ($a in $argList) { $quotedParts += ('"' + $a + '"') }
-    $psi.Arguments = ($quotedParts -join ' ')
-    $psi.RedirectStandardInput = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    # La CLI falsa va PRIMERO en el PATH para ganarle a la real.
-    $psi.EnvironmentVariables[$PathEnvKey] = $FakeCliDir + [System.IO.Path]::PathSeparator + $psi.EnvironmentVariables[$PathEnvKey]
-    # Redirecciones de mentira que el script DEBE limpiar...
-    $psi.EnvironmentVariables['CLAUDE_CONFIG_DIR'] = 'C:\fake\redirected-config'
-    $psi.EnvironmentVariables['ANTHROPIC_BASE_URL'] = 'https://fake.example/redirect'
-    # Credencial alternativa que el prefijo viejo CLAUDE_CODE_USE_ no cubria
-    # (hallazgo de la revision cruzada de kimi, 2026-08-03).
-    $psi.EnvironmentVariables['CLAUDE_CODE_OAUTH_TOKEN'] = 'fake-oauth-token'
-    # ...y una que a proposito NO debe limpiar (ver cabecera del script).
-    $psi.EnvironmentVariables['HTTPS_PROXY'] = 'http://fake-proxy.example:8080'
-    $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $psi
-    $proc.Start() | Out-Null
-    # Lecturas ASYNC antes de esperar (hallazgo de la revision cruzada de kimi,
-    # 2026-08-03): leer stdout hasta EOF y despues stderr EN SERIE se traba si
-    # el hijo llena el buffer del pipe de stderr (~4KB) mientras el padre sigue
-    # bloqueado en stdout. Invoke-CliHeadless, en cross-review.ps1, ya usa esta
-    # forma correcta; este helper repetia el patron riesgoso.
-    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-    $stderrTask = $proc.StandardError.ReadToEndAsync()
-    $proc.StandardInput.Close()
-    $proc.WaitForExit()
-    return [PSCustomObject]@{ Stdout = $stdoutTask.Result; Stderr = $stderrTask.Result; ExitCode = $proc.ExitCode }
-}
-
-$fakeCliDir = Join-Path $TestFixturesDir 'fake-cli-bin'
-New-Item -ItemType Directory -Path $fakeCliDir -Force | Out-Null
-if ($env:OS -eq 'Windows_NT') {
-    # CRLF a proposito: cmd.exe puede tropezar con un .cmd de solo LF.
-    $fakeClaudePath = Join-Path $fakeCliDir 'claude.cmd'
-    $fakeClaude = "@echo off`r`nif defined CLAUDE_CONFIG_DIR (echo CFG=SET) else (echo CFG=UNSET)`r`nif defined ANTHROPIC_BASE_URL (echo BASE=SET) else (echo BASE=UNSET)`r`nif defined CLAUDE_CODE_OAUTH_TOKEN (echo OAUTH=SET) else (echo OAUTH=UNSET)`r`nif defined HTTPS_PROXY (echo PROXY=SET) else (echo PROXY=UNSET)`r`n"
-} else {
-    $fakeClaudePath = Join-Path $fakeCliDir 'claude'
-    $fakeClaude = @'
-#!/bin/sh
-[ -n "$CLAUDE_CONFIG_DIR" ] && echo CFG=SET || echo CFG=UNSET
-[ -n "$ANTHROPIC_BASE_URL" ] && echo BASE=SET || echo BASE=UNSET
-[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo OAUTH=SET || echo OAUTH=UNSET
-[ -n "$HTTPS_PROXY" ] && echo PROXY=SET || echo PROXY=UNSET
-'@
-}
-Write-Utf8NoBomFile -Path $fakeClaudePath -Content $fakeClaude
-if ($env:OS -ne 'Windows_NT') { & chmod +x $fakeClaudePath }
-# Un cambio sin commitear garantiza un diff real que revisar.
-Write-Utf8NoBomFile -Path (Join-Path $pyRepo 'app.py') -Content "def add(a, b):`n    return a + b`n`ndef div(a, b):`n    return a / b  # marker_env_test`n"
-$rEnv = Invoke-CrossReviewWithFakeClaude -RepoPath $pyRepo -FakeCliDir $fakeCliDir
-Assert-True ($rEnv.Stdout -match 'CFG=UNSET') 'CLAUDE_CONFIG_DIR is stripped before claude runs (a relocated config cannot redirect the review to another account)' "stdout=$($rEnv.Stdout)"
-Assert-True ($rEnv.Stdout -match 'BASE=UNSET') 'ANTHROPIC_* is still stripped (regression guard on the behaviour that already worked)'
-Assert-True ($rEnv.Stdout -match 'OAUTH=UNSET') 'CLAUDE_CODE_OAUTH_TOKEN is stripped too -- the old CLAUDE_CODE_USE_ prefix left this credential door open (kimi cross-review 2026-08-03)'
-Assert-True ($rEnv.Stdout -match 'PROXY=SET') 'HTTPS_PROXY is deliberately NOT stripped -- a proxy is usually mandatory infrastructure, and clearing it would cut off legitimate network access'
 
 Write-Host ''
 Write-Host '=== TEST GROUP 3k (kimi cross-review 2026-08-03): saikit-gate-heal refuses a duplicated anchor ==='
@@ -2051,8 +1558,8 @@ Assert-True ($rRegG.ExitCode -eq 0) 'a dead checker does not change the heal exi
 
 # (h) verificador colgado: este script corre en CADA SessionStart. Antes de
 # este cambio no lanzaba ningun proceso externo; ahora si, y un cuelgue ahi se
-# come el presupuesto del arranque. Mismo motivo por el que cross-review.ps1
-# tiene -TimeoutSec desde un cuelgue real (2026-07-05).
+# come el presupuesto del arranque. De ahi el -RegistrationTimeoutSec de este
+# script, nacido de un cuelgue real (2026-07-05).
 $fakeCheckHang = Join-Path $fakeCheckDir 'hang.sh'
 Write-Utf8NoBomFile -Path $fakeCheckHang -Content "#!/usr/bin/env bash`nsleep 20`n"
 $regHomeH = New-HealHomeWithSettings -Name 'fake-home-heal-reg-h' -SettingsJson $settingsWithoutHook
@@ -2143,20 +1650,17 @@ $claudeMdAfterInstall = Read-TextFile -Path $fakeClaudeMd
 Assert-True ($claudeMdAfterInstall -match 'Some pre-existing content that must survive untouched') 'install-ai-rules.ps1 preserves pre-existing CLAUDE.md content'
 Assert-True ($claudeMdAfterInstall -match 'REGLAS DE CALIDAD') 'install-ai-rules.ps1 adds the REGLAS DE CALIDAD section to CLAUDE.md'
 Assert-True ($claudeMdAfterInstall -match 'JAMAS') 'the section states the never-bypass-hooks rule'
-Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review.ps1')) 'the section mentions cross-review.ps1 for delicate changes'
+Assert-True ($claudeMdAfterInstall -notmatch 'cross-review') 'the global section no longer references cross-review'
 Assert-True ($claudeMdAfterInstall -match 'pruebas focalizadas') 'the global section limits iteration to focused tests'
 Assert-True ($claudeMdAfterInstall -match 'la bateria completa la ejecuta CI una sola vez, por SHA final del bloque de CODIGO') 'global rule 3: the full battery is CI job, paid once on the final SHA of a CODE block'
 Assert-True ($claudeMdAfterInstall -match 'exclusivamente fast pagan los checks documentales') 'global rule 3: all-fast blocks pay documental checks instead of the battery'
 Assert-True ($claudeMdAfterInstall -match 'commit, push o CI ya validaron') 'the global section reuses hook and CI evidence for an unchanged SHA'
 Assert-True ($claudeMdAfterInstall -match 'una sola ronda por bloque') 'the global section consolidates review findings into one round'
 Assert-True ($claudeMdAfterInstall -match 'observacion tardia no bloqueante va a una fila del plan') 'the global section sends a late non-blocking finding to a plan row instead of reopening the cycle'
-Assert-True ($claudeMdAfterInstall -match 'Solo un hallazgo BLOQUEANTE abre otra ronda') 'the global section reopens a review only for a blocking finding'
-Assert-True ($claudeMdAfterInstall -match 'Se repite mientras una ronda traiga un bloqueante y para en la primera que no traiga ninguno') 'the global section keeps reviewing while blockers appear and stops at the first round without one'
-Assert-True ($claudeMdAfterInstall -match 'Si el mismo bloqueante vuelve en dos rondas seguidas') 'the global section stops a fix that does not converge'
+Assert-True ($claudeMdAfterInstall -match 'Solo un hallazgo BLOQUEANTE reabre el ciclo') 'the global section reopens the cycle only for a blocking finding'
 Assert-True ($claudeMdAfterInstall -match 'Un bloqueante nunca va a una fila del plan ni se mergea abierto') 'the global section never parks a blocker in the plan nor merges it open'
 Assert-True ($claudeMdAfterInstall -notmatch 'Tope: 2 rondas') 'the global section has no fixed round cap'
-Assert-True ($claudeMdAfterInstall -match [regex]::Escape('cross-review -Con <otro revisor> -Desde')) 'the global second-round command carries the mandatory -Con'
-Assert-True ($claudeMdAfterInstall -match 'Lo no bloqueante no abre ronda') 'the global section keeps non-blocking findings from opening a round'
+Assert-True ($claudeMdAfterInstall -match 'Lo no bloqueante: se corrige en la misma si es de una linea') 'the global section fixes one-line non-blockers in the same round'
 Assert-True ($claudeMdAfterInstall -match 'va a una fila del plan \(Plans.md o el tracker del repo\)') 'the global section sends unfixed non-blocking findings to a plan row'
 Assert-True ($claudeMdAfterInstall -notmatch 'Sin tope de rondas') 'the old unbounded-rounds rule is gone'
 Assert-True ($claudeMdAfterInstall -match [regex]::Escape('init-repo.ps1')) 'the section mentions init-repo.ps1 for repos without a quality kit yet'
