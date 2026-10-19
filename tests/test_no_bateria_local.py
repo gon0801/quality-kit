@@ -41,6 +41,13 @@ BLOQUEADOS = [
     'bash -c "pytest -q"',
     "for f in a b; do pytest; done",
     "echo $(pnpm test)",
+    "cat <<'EOF' | bash\npnpm test\nEOF",
+    "cat <<EOF | sh\npytest -q\nEOF",
+    "cat <<EOF | ssh gwpc\npnpm test\nEOF",
+    'echo "$(pnpm test)"',
+    'echo "`pytest`"',
+    "pytest tests/test_a.py tests/",
+    "node scripts/run-vitest.mjs run src/ a.test.ts",
 ]
 
 PERMITIDOS = [
@@ -63,6 +70,9 @@ PERMITIDOS = [
     "gh pr create --body 'Bloquea:\npnpm test\npytest -q'",
     "echo 'pytest -q'",
     "python3 - <<'EOF'\nprint('pytest -q')\nEOF",
+    "cat > notas.txt <<EOF\npnpm test\nEOF",
+    "echo 'pnpm test'",
+    "pytest -q tests/test_a.py tests/test_c.py",
 ]
 
 
