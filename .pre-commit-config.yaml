@@ -32,3 +32,14 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+# Candado propio del kit (hooks/no_bateria_en_planes.py): los planes, briefs
+# y runbooks no pueden ordenar correr la bateria a mano -- misma regla de
+# David del candado no-bateria-local: la bateria completa corre en CI, una
+# vez por bloque, sobre el SHA final.
+  - repo: local
+    hooks:
+      - id: no-bateria-en-planes
+        name: no-bateria-en-planes (los planes no ordenan baterias a mano)
+        entry: python3 hooks/no_bateria_en_planes.py
+        language: system
+        files: '(^|/)(plans|docs|briefs)/.*\.(md|txt)$|(^|/)Plans\.md$'

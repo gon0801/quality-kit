@@ -21,3 +21,18 @@ repos:
       - id: check-added-large-files
       - id: check-json
       - id: check-yaml
+# Candado de planes y briefs (hooks/no_bateria_en_planes.py del kit): los
+# documentos que un agente va a obedecer no pueden ordenar correr la bateria
+# a mano -- misma regla de David del candado no-bateria-local: la bateria
+# completa corre en CI, una vez por bloque, sobre el SHA final. El candado
+# vive con el resto de los candados del kit (install-shims.sh lo deja en
+# ~/.local/share/quality-kit/candados/ o init-repo lo instala en hooks/);
+# si este repo todavia no lo tiene, el chequeo pasa de largo en vez de
+# tumbar cada commit que toca un plan.
+  - repo: local
+    hooks:
+      - id: no-bateria-en-planes
+        name: no-bateria-en-planes (los planes no ordenan baterias a mano)
+        entry: sh -c 'p="hooks/no_bateria_en_planes.py"; test -f "$p" || p="$HOME/.local/share/quality-kit/candados/no_bateria_en_planes.py"; test -f "$p" && exec python3 "$p" "$@" || exit 0' sh
+        language: system
+        files: '(^|/)(plans|docs|briefs)/.*\.(md|txt)$|(^|/)Plans\.md$'

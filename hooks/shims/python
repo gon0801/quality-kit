@@ -1,0 +1,35 @@
+#!/bin/sh
+# Shim de quality-kit (candado no-bateria-local) delante de python.
+# Llama al juez _ejecuta.py de este directorio con un python REAL del PATH
+# (saltando el propio directorio de shims, para no recursar): el juez
+# bloquea las baterias con el mensaje del candado y exit 2, o hace exec del
+# python real con estos mismos argumentos. Solo usa builtins de sh: el
+# shim no puede depender de dirname/sed ni de nada del PATH que juzga.
+d=$0
+case $d in
+*/*) d=${d%/*} ;;
+*) d=. ;;
+esac
+d=$(CDPATH= cd "$d" && pwd) || exit 127
+[ -f "$d/_ejecuta.py" ] || {
+    echo "quality-kit shims: falta $d/_ejecuta.py; reinstala con install-shims.sh" >&2
+    exit 127
+}
+viejoIFS=$IFS
+IFS=:
+for py in python3 python
+do
+    for p in $PATH
+    do
+        [ -n "$p" ] || continue
+        [ "$p" = "$d" ] && continue
+        if [ -f "$p/$py" ] && [ -x "$p/$py" ]
+        then
+            IFS=$viejoIFS
+            exec "$p/$py" "$d/_ejecuta.py" python "$@"
+        fi
+    done
+done
+IFS=$viejoIFS
+echo "quality-kit shims: no encontre un python real fuera de $d" >&2
+exit 127
