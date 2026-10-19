@@ -1,1 +1,3 @@
 tests/fixtures/vendor-hooks/*.sh text eol=lf
+hooks/shims/** text eol=lf
+hooks/install-shims.sh text eol=lf
