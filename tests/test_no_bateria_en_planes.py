@@ -80,6 +80,37 @@ class NoBateriaEnPlanesTests(unittest.TestCase):
         r = self.correr("Ordena un workflow_dispatch de quality.yml y corre.\n")
         self.assertEqual(r.returncode, 1, r.stderr)
 
+    def test_valla_cuatro_backticks_con_pnpm_test_falla(self) -> None:
+        r = self.correr("````sh\npnpm test\n````\n")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("plan.md:2", r.stderr)
+
+    def test_valla_cuatro_tildes_con_pnpm_test_falla(self) -> None:
+        r = self.correr("~~~~sh\npnpm test\n~~~~\n")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("plan.md:2", r.stderr)
+
+    def test_cierre_mas_corto_no_cierra_la_valla(self) -> None:
+        r = self.correr("````sh\npnpm test\n```\npnpm test\n````\n")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("plan.md:4", r.stderr)
+
+    def test_cierre_mas_largo_si_cierra_la_valla(self) -> None:
+        r = self.correr("```sh\npnpm test\n````\n\n```python\npnpm test\n```\n")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("plan.md:2", r.stderr)
+        self.assertNotIn("plan.md:6", r.stderr)
+
+    def test_cierre_de_otro_caracter_no_cierra_la_valla(self) -> None:
+        r = self.correr("````sh\n~~~\npnpm test\n````\n")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("plan.md:3", r.stderr)
+
+    def test_selectores_incluyen_runbooks(self) -> None:
+        for rel in (".pre-commit-config.yaml", "templates/pre-commit-generic.yaml"):
+            texto = (ROOT / rel).read_text(encoding="utf-8")
+            self.assertIn("runbooks", texto, rel)
+
     def test_archivo_que_no_es_md_ni_txt_se_ignora(self) -> None:
         r = self.correr("```sh\npnpm test\n```\n", nombre="plans/plan.rst")
         self.assertEqual(r.returncode, 0, r.stderr)

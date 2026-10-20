@@ -35,4 +35,4 @@ repos:
         name: no-bateria-en-planes (los planes no ordenan baterias a mano)
         entry: sh -c 'p="hooks/no_bateria_en_planes.py"; test -f "$p" || p="$HOME/.local/share/quality-kit/candados/no_bateria_en_planes.py"; test -f "$p" && exec python3 "$p" "$@" || exit 0' sh
         language: system
-        files: '(^|/)(plans|docs|briefs)/.*\.(md|txt)$|(^|/)Plans\.md$'
+        files: '(^|/)(plans|docs|briefs|runbooks)/.*\.(md|txt)$|(^|/)Plans\.md$'
