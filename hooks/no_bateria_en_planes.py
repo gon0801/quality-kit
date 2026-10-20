@@ -73,7 +73,7 @@ _EXENTA = re.compile(
     r"|prohibid[oa]s?|en\s+ci)\b"
 )
 
-_VALLA = re.compile(r"^\s*(```|~~~)")
+_VALLA = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 _INFO_SHELL = re.compile(
     r"^(?:sh|bash|shell|zsh|console|terminal|posix|powershell|pwsh|cmd|bat)?\s*$",
     re.I,
@@ -103,11 +103,24 @@ def _violaciones(texto: str) -> list[tuple[int, str]]:
     hallazgos: list[tuple[int, str]] = []
     dentro = False
     shell = False
+    valla_char = ""
+    valla_largo = 0
     for num, linea in enumerate(texto.splitlines(), start=1):
         valla = _VALLA.match(linea)
         if valla:
-            dentro = not dentro
-            shell = dentro and _es_shell(linea[valla.end() :])
+            marca, resto = valla.group(1), valla.group(2)
+            if not dentro:
+                dentro = True
+                valla_char, valla_largo = marca[0], len(marca)
+                shell = _es_shell(resto)
+            elif (
+                marca[0] == valla_char
+                and len(marca) >= valla_largo
+                and not resto.strip()
+            ):
+                dentro = False
+                shell = False
+                valla_char, valla_largo = "", 0
             continue
         normal = _normaliza(linea)
         if _EXENTA.search(normal):
